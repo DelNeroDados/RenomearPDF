@@ -1,0 +1,5 @@
+# Texto com quebra de linha normalizada no repositório.
+* text=auto
+
+# O cmd.exe do Windows se confunde com arquivos .bat que usam só LF.
+*.bat text eol=crlf

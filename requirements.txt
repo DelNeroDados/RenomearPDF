@@ -1,0 +1,6 @@
+# Programa
+google-genai>=2.17   # SDK oficial do Gemini (traz pydantic e httpx junto)
+pypdf>=5.9           # leitura e recorte de PDFs, sem dependências nativas
+
+# Só para rodar os testes
+pytest>=8

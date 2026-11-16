@@ -1,0 +1,43 @@
+# ------------------------------------------------------------------
+# Segredos: a chave da API mora aqui e nunca pode ir para o GitHub.
+# O .env.example (modelo sem chave) é a exceção e deve ser versionado.
+# ------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# ------------------------------------------------------------------
+# Dados pessoais: os PDFs analisados e as cópias geradas são seus,
+# não do projeto (e muitos têm direitos autorais de terceiros).
+# ------------------------------------------------------------------
+PDFs/
+out/
+*.pdf
+
+# Cache das análises (SQLite) e memória do último modelo usado.
+.cache/
+
+# Versões antigas guardadas localmente; uma delas tinha chave em texto plano.
+_old_/
+
+# Anotações pessoais com caminhos desta máquina (o README cobre o mesmo conteúdo).
+cmd.md
+
+# ------------------------------------------------------------------
+# Python
+# ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.python_embed/
+
+# ------------------------------------------------------------------
+# Editores e sistema
+# ------------------------------------------------------------------
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
