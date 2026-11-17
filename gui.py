@@ -19,15 +19,22 @@ from config import NIVEIS
 from cache import Cache
 from gemini_client import ClienteGemini, descrever_erro
 from naming import finalizar_nome, montar_nome
-from organizer import PASTA_VERIFICAR, copiar
-from pdf_tools import listar_pdfs, texto_preview
+from conversao import eh_ebook
+from organizer import PASTA_VERIFICAR, ItemCopia, copiar
+from pdf_tools import eh_pdf, listar_arquivos, texto_preview
 from pipeline import BAIXA, CACHE, ERRO, OK, Processador, Resultado
-from schema import AREAS_SUGERIDAS, TIPOS
+import registro
+from registro import ARQUIVO_LOG, log
+import listas
+from dialogos import EditorLista, JanelaChave, JanelaPython
+from schema import AREAS_PADRAO, CATEGORIAS_PADRAO, OUTROS
 
-# Dois estados que só existem na tela (os outros vêm do pipeline).
-NA_FILA, CANCELADO = "fila", "cancelado"
+# Estados que só existem na tela (os outros vêm do pipeline).
+# OUTRO é arquivo que não é PDF nem e-book: não vai para a IA, mas é copiado.
+NA_FILA, CANCELADO, OUTRO = "fila", "cancelado", "outro"
 
-ICONES = {OK: "✔", CACHE: "↺", BAIXA: "⚠", ERRO: "✖", NA_FILA: "⏳", CANCELADO: "⏹"}
+ICONES = {OK: "✔", CACHE: "↺", BAIXA: "⚠", ERRO: "✖", NA_FILA: "⏳", CANCELADO: "⏹",
+          OUTRO: "📎"}
 
 # (id, título, largura, pode editar?)
 COLUNAS = [
@@ -44,7 +51,9 @@ COLUNAS = [
 
 TEXTO_INICIAL = (
     "Como usar:\n"
-    "1. Escolha a pasta dos PDFs (qualquer pasta do computador).\n"
+    "1. Escolha a pasta dos PDFs (qualquer pasta do computador). EPUB, MOBI,\n"
+    "   AZW3 e FB2 são convertidos para PDF; o original vai junto na cópia.\n"
+    "   Outros arquivos (📎) não vão para a IA e são copiados para .verificar.\n"
     "2. Clique em ▶ Analisar com IA.\n"
     "3. Revise a tabela. Duplo clique edita uma célula; Delete tira a linha.\n"
     "   ⚠ amarelo = a IA ficou em dúvida; ✖ vermelho = erro; ↺ = veio do cache.\n"
@@ -69,6 +78,7 @@ class App:
         root.minsize(1000, 500)
 
         self.cfg = config.carregar()
+        self.listas = listas.carregar()
         self.cache = Cache(config.PASTA_CACHE / "analises.sqlite")
         self.cliente: ClienteGemini | None = None    # criado na primeira análise
         self.processador: Processador | None = None
@@ -83,6 +93,7 @@ class App:
         self.total = 0
         self.feitos = 0
         self.ultimo_aviso = ""
+        self.etapas: dict[Path, str] = {}   # o que cada arquivo está fazendo agora
 
         self.var_origem = tk.StringVar()
         self.var_destino = tk.StringVar()
@@ -93,6 +104,7 @@ class App:
         self.var_nivel_texto = tk.StringVar()
         self.var_escalar = tk.BooleanVar(value=True)
 
+        self._montar_menu()
         self._montar_topo()
         self._montar_centro()
         self._montar_rodape()
@@ -101,6 +113,19 @@ class App:
     # ==================================================================
     # 1. Montagem da janela
     # ==================================================================
+
+    def _montar_menu(self):
+        barra = tk.Menu(self.root)
+        menu = tk.Menu(barra, tearoff=False)
+        menu.add_command(label="Categorias…", command=self.editar_categorias)
+        menu.add_command(label="Áreas…", command=self.editar_areas)
+        menu.add_separator()
+        menu.add_command(label="Chave da API…", command=self.trocar_chave)
+        menu.add_command(label="Python…", command=self.escolher_python)
+        menu.add_separator()
+        menu.add_command(label="Abrir o log", command=self.abrir_log)
+        barra.add_cascade(label="Configurações", menu=menu)
+        self.root.configure(menu=barra)
 
     def _montar_topo(self):
         topo = ttk.Frame(self.root, padding=(10, 8, 10, 0))
@@ -170,6 +195,7 @@ class App:
         self.tabela.tag_configure(CACHE, foreground="#375a7f")
         self.tabela.tag_configure(NA_FILA, foreground="#888888")
         self.tabela.tag_configure(CANCELADO, foreground="#888888")
+        self.tabela.tag_configure(OUTRO, foreground="#888888")
 
         rolagem_v = ttk.Scrollbar(quadro, orient=tk.VERTICAL, command=self.tabela.yview)
         rolagem_h = ttk.Scrollbar(quadro, orient=tk.HORIZONTAL, command=self.tabela.xview)
@@ -245,32 +271,50 @@ class App:
             self.var_destino.set(str(origem / "out"))
         destino = Path(self.var_destino.get().strip())
 
-        pdfs = listar_pdfs(origem, self.var_subpastas.get(), ignorar=destino)
-        if not pdfs:
-            messagebox.showinfo("Nada a fazer", "Nenhum PDF encontrado nessa pasta.")
+        arquivos = listar_arquivos(origem, self.var_subpastas.get(), ignorar=destino)
+        log.info("=== Análise: %s | saída %s | %d arquivo(s) | nível %s | refazer dúvidas: %s",
+                 origem, destino, len(arquivos), NIVEIS[int(self.var_nivel.get())].nome,
+                 "sim" if self.var_escalar.get() else "não")
+        if not arquivos:
+            messagebox.showinfo("Nada a fazer", "Nenhum arquivo encontrado nessa pasta.")
             return
 
         # A tabela aparece cheia na hora, com tudo em ⏳; os resultados vão preenchendo.
         self.tabela.delete(*self.tabela.get_children())
         self.linhas.clear()
         self.linha_do_arquivo.clear()
-        for pdf in pdfs:
-            nome_exibido = pdf.relative_to(origem) if self.var_subpastas.get() else pdf.name
-            id_linha = self.tabela.insert("", tk.END, tags=(NA_FILA,), values=(
-                ICONES[NA_FILA], str(nome_exibido), "", "", "", "", "", "", ""))
-            self.linhas[id_linha] = {"caminho": pdf, "status": NA_FILA,
+        para_analisar = []
+        for arquivo in arquivos:
+            analisavel = eh_pdf(arquivo) or eh_ebook(arquivo)
+            status = NA_FILA if analisavel else OUTRO
+            nome_exibido = arquivo.relative_to(origem) if self.var_subpastas.get() else arquivo.name
+            id_linha = self.tabela.insert("", tk.END, tags=(status,), values=(
+                ICONES[status], str(nome_exibido), "", "", "", "", "",
+                "" if analisavel else "(copiado para .verificar sem análise)", ""))
+            self.linhas[id_linha] = {"caminho": arquivo, "status": status,
                                      "manual": False, "campos": {}}
-            self.linha_do_arquivo[pdf] = id_linha
+            self.linha_do_arquivo[arquivo] = id_linha
+            if analisavel:
+                para_analisar.append(arquivo)
+            else:
+                log.info("📎 %s (não é PDF nem e-book)", arquivo.name)
 
-        self._iniciar_rodada(pdfs)
+        if para_analisar:
+            self._iniciar_rodada(para_analisar)
+        else:
+            self.var_status.set("Nenhum PDF ou e-book nesta pasta; os arquivos serão "
+                                "copiados para .verificar sem análise.")
 
     def _iniciar_rodada(self, caminhos, instrucoes=None, forcar=False):
         """Começa uma rodada de análise sem travar a janela."""
-        self.cfg = config.carregar()   # relê o .env: a pessoa pode ter mudado algo
+        self.cfg = config.carregar()   # relê o config/.env: a pessoa pode ter mudado algo
         self.geracao += 1
         rodada = self.geracao
         self.total, self.feitos = len(caminhos), 0
         self.ultimo_aviso = ""
+        self.etapas.clear()
+        log.info("Rodada %d: %d arquivo(s)%s", rodada, len(caminhos),
+                 ", ignorando o cache" if forcar else "")
         self.progresso.configure(maximum=self.total, value=0)
         self._modo_ocupado(True)
         self.var_status.set("Conectando ao Gemini…")
@@ -284,6 +328,8 @@ class App:
                                             memoria=config.PASTA_CACHE / "modelos_sem_cota.json")
                     cliente.resolver_modelo()
                     self.cliente = cliente
+                self.cliente.categorias = list(self.listas.categorias)
+                self.cliente.areas = list(self.listas.areas)
                 if rodada != self.geracao:
                     return   # a pessoa cancelou enquanto a gente conectava
                 processador = Processador(self.cliente, self.cache, nivel,
@@ -304,6 +350,10 @@ class App:
         if self.processador:
             self.processador.cancelar()
         self.geracao += 1
+        pendentes = [l["caminho"].name for l in self.linhas.values() if l["status"] == NA_FILA]
+        log.warning("Cancelado pela pessoa com %d pendente(s): %s", len(pendentes),
+                    "; ".join(pendentes) or "nenhum")
+        self.etapas.clear()
         quantos = self._marcar_pendentes_como_cancelados()
         self._modo_ocupado(False)
         self.var_status.set(
@@ -328,27 +378,44 @@ class App:
                     self._aplicar_resultado(carga, contar=rodada == self.geracao)
                 elif rodada != self.geracao:
                     continue   # aviso velho de uma rodada que já foi cancelada
+                elif tipo == "etapa":
+                    caminho, texto = carga
+                    self.etapas[caminho] = texto
                 elif tipo == "aviso":
                     self.ultimo_aviso = carga
+                    log.warning("Aviso: %s", carga)
                 elif tipo == "falha_inicio":
                     self._falha_ao_conectar(carga)
                 elif tipo == "fim":
                     self._modo_ocupado(False)
+                    self.etapas.clear()
                     self.var_status.set(f"Concluído: {self.feitos}/{self.total}  ·  "
                                         + self._resumo_de_uso())
+                    log.info("Fim da rodada: %s", self.var_status.get())
         except Empty:
             pass
 
         if self._esta_rodando() and self.cliente:
+            etapa = f"   ·   {list(self.etapas.values())[-1]}…" if self.etapas else ""
             aviso = f"   ·   ⚠ {self.ultimo_aviso}" if self.ultimo_aviso else ""
-            self.var_status.set(
-                f"Analisando {self.feitos}/{self.total} com {self.cliente.modelo}…{aviso}")
+            self.var_status.set(f"Analisando {self.feitos}/{self.total} com "
+                                f"{self.cliente.modelo}…{etapa}{aviso}")
         self.root.after(INTERVALO_MS, self._recolher_eventos)
 
     def _aplicar_resultado(self, resultado: Resultado, contar: bool = True):
         if contar:
             self.feitos += 1
             self.progresso.configure(value=self.feitos)
+        self.etapas.pop(resultado.caminho, None)
+
+        d = resultado.dados
+        log.info("%s %s | %s | %s | %s nível %s%s%s", ICONES.get(resultado.status, "?"),
+                 resultado.caminho.name,
+                 f"{d.titulo} ({d.sobrenome_principal}, {d.ano or 's/ano'})" if d else "-",
+                 f"conf. {d.confianca:.0%}" if d else "-",
+                 resultado.modelo or "sem modelo", resultado.nivel,
+                 f" | ERRO: {resultado.erro}" if resultado.erro else "",
+                 "" if contar else " (chegou depois do cancelamento)")
 
         id_linha = self.linha_do_arquivo.get(resultado.caminho)
         if not id_linha or not self.tabela.exists(id_linha):
@@ -357,14 +424,14 @@ class App:
         linha = self.linhas[id_linha]
         linha.update(status=resultado.status, dados=resultado.dados, erro=resultado.erro,
                      modelo=resultado.modelo, nivel=resultado.nivel,
-                     manual=False, conferida=False)
+                     convertido=resultado.convertido, manual=False, conferida=False)
         dados = resultado.dados
         if dados:
-            linha["campos"] = {"tipo": dados.tipo_documento.value, "area": dados.area,
+            linha["campos"] = {"tipo": dados.tipo_documento, "area": dados.area,
                                "sobrenome": dados.sobrenome_principal,
                                "ano": str(dados.ano or ""), "titulo": dados.titulo}
         else:
-            linha["campos"] = {"tipo": "Outros", "area": "", "sobrenome": "",
+            linha["campos"] = {"tipo": OUTROS, "area": "", "sobrenome": "",
                                "ano": "", "titulo": ""}
             linha["novo_nome"] = resultado.caminho.name
 
@@ -373,10 +440,11 @@ class App:
             self.mostrar_detalhes()
 
     def _falha_ao_conectar(self, mensagem):
+        log.error("Falha ao conectar ao Gemini: %s", mensagem)
         self._modo_ocupado(False)
         self._marcar_pendentes_como_cancelados()
         self.var_status.set("Não foi possível conectar.")
-        messagebox.showerror("Gemini", f"{mensagem}\n\nConfira GEMINI_API_KEY no arquivo .env.")
+        messagebox.showerror("Gemini", f"{mensagem}\n\nConfira a chave em Configurações → Chave da API…")
 
     def _resumo_de_uso(self) -> str:
         c = self.cliente
@@ -442,11 +510,11 @@ class App:
         valor_atual = self.tabela.set(id_linha, coluna)
 
         if coluna == "tipo":
-            editor = ttk.Combobox(self.tabela, values=TIPOS, state="readonly")
+            editor = ttk.Combobox(self.tabela, values=self.listas.categorias, state="readonly")
             editor.set(valor_atual)
         elif coluna == "area":
             # Área aceita texto livre: a lista é só sugestão.
-            editor = ttk.Combobox(self.tabela, values=AREAS_SUGERIDAS)
+            editor = ttk.Combobox(self.tabela, values=self.listas.areas)
             editor.set(valor_atual)
         else:
             editor = ttk.Entry(self.tabela)
@@ -462,6 +530,7 @@ class App:
             editor.destroy()
             linha = self.linhas[id_linha]
             linha["conferida"] = True   # mexeu na linha: deixa de ir para .verificar
+            log.info("Editado à mão: %s | %s = %r", linha["caminho"].name, coluna, valor)
             if coluna == "novo_nome":
                 # Nome digitado à mão vira lei: o modelo de nome não mexe mais nele.
                 linha["novo_nome"] = finalizar_nome(valor)
@@ -489,6 +558,7 @@ class App:
             self.tabela.delete(id_linha)
             linha = self.linhas.pop(id_linha)
             self.linha_do_arquivo.pop(linha["caminho"], None)
+            log.info("Tirado da lista (não será copiado): %s", linha["caminho"].name)
 
     # ==================================================================
     # 6. Painel lateral
@@ -499,6 +569,12 @@ class App:
         if not linha:
             return
         partes = [f"Arquivo: {linha['caminho']}"]
+        if linha["status"] == OUTRO:
+            partes.append("\nNão é PDF nem e-book: não vai para a IA. Na cópia, vai para "
+                          f"{PASTA_VERIFICAR}\\Outros formatos com o nome original.")
+        if linha.get("convertido"):
+            partes.append("Convertido para PDF. Na cópia, o PDF e o original vão juntos, "
+                          "com o mesmo nome.")
         if linha.get("erro"):
             partes.append(f"\n✖ ERRO: {linha['erro']}")
 
@@ -508,7 +584,7 @@ class App:
             partes += [
                 f"\nTítulo: {d.titulo}" + (f" — {d.subtitulo}" if d.subtitulo else ""),
                 f"Autores: {autores}",
-                f"Ano: {d.ano or '—'}    Tipo: {d.tipo_documento.value}    "
+                f"Ano: {d.ano or '—'}    Tipo: {d.tipo_documento}    "
                 f"Idioma: {d.idioma or '—'}",
                 f"Área: {d.area}" + (f" / {d.subarea}" if d.subarea else ""),
                 f"Instituição: {d.instituicao or '—'}",
@@ -525,15 +601,20 @@ class App:
     def abrir_pdf(self):
         _, linha = self._linha_selecionada()
         if linha:
-            os.startfile(linha["caminho"])
+            os.startfile(linha.get("convertido") or linha["caminho"])
 
     def ver_texto(self):
         _, linha = self._linha_selecionada()
         if linha:
-            self._escrever_no_painel(texto_preview(linha["caminho"]))
+            alvo = linha.get("convertido") or linha["caminho"]
+            if not eh_pdf(alvo):
+                self._escrever_no_painel("(Ainda não convertido para PDF, ou não é PDF.)")
+                return
+            self._escrever_no_painel(texto_preview(alvo))
 
     def reanalisar_com_instrucao(self):
-        selecionadas = [i for i in self.tabela.selection() if i in self.linhas]
+        selecionadas = [i for i in self.tabela.selection()
+                        if i in self.linhas and self.linhas[i]["status"] != OUTRO]
         if not selecionadas:
             messagebox.showinfo("Reanalisar", "Selecione uma ou mais linhas na tabela.")
             return
@@ -547,6 +628,7 @@ class App:
             parent=self.root)
         if instrucao is None:
             return   # clicou em Cancelar na caixinha
+        log.info("Reanalisar %d arquivo(s), instrução: %r", len(selecionadas), instrucao)
 
         caminhos = []
         for id_linha in selecionadas:
@@ -568,7 +650,76 @@ class App:
         self.painel.insert(tk.END, texto)
 
     # ==================================================================
-    # 7. Cópia final
+    # 7. Menu Configurações
+    # ==================================================================
+
+    AVISO_CACHE = ("Vale para as próximas análises. Arquivos que já estão no cache "
+                   "mantêm o que a IA respondeu antes; para refazer um deles, "
+                   "selecione a linha e use Reanalisar.")
+
+    def editar_categorias(self):
+        def salvar(itens):
+            self.listas.categorias = listas.limpar(itens, com_outros=True)
+            listas.salvar(self.listas)
+            log.info("Categorias: %s", "; ".join(self.listas.categorias))
+
+        EditorLista(self.root, "Categorias",
+                    "Cada categoria vira uma subpasta na cópia, e a IA é obrigada a "
+                    f"escolher uma delas. “{OUTROS}” sempre existe.\n\n" + self.AVISO_CACHE,
+                    self.listas.categorias, CATEGORIAS_PADRAO, salvar, fixos=[OUTROS])
+
+    def editar_areas(self):
+        def salvar(itens):
+            self.listas.areas = listas.limpar(itens)
+            listas.salvar(self.listas)
+            log.info("Áreas: %s", "; ".join(self.listas.areas))
+
+        EditorLista(self.root, "Áreas",
+                    "As áreas são sugestões: a IA prefere uma delas, mas pode responder "
+                    "outra, e na tabela você pode digitar qualquer área.\n\n"
+                    + self.AVISO_CACHE,
+                    self.listas.areas, AREAS_PADRAO, salvar, ordenar=True)
+
+    def trocar_chave(self):
+        if self._esta_rodando():
+            messagebox.showinfo("Aguarde", "Espere a análise atual terminar.")
+            return
+
+        def salvar(chave):
+            config.salvar_chave(chave)
+            self.cfg = config.carregar()
+            self.cliente = None   # a próxima análise conecta com a chave nova
+            log.info("Chave da API trocada (%s)", config.chave_mascarada(chave))
+            self.var_status.set("Chave da API salva. Ela vale a partir da próxima análise.")
+
+        JanelaChave(self.root, config.carregar().api_key, salvar)
+
+    def escolher_python(self):
+        def salvar(caminho):
+            config.salvar_no_env("PYTHON", caminho)
+            log.info("Python escolhido: %s", caminho or "automático")
+            if self._esta_rodando():
+                messagebox.showinfo("Python", "Salvo. Vale na próxima vez que abrir o programa.")
+            elif messagebox.askyesno("Reiniciar", "Salvo. O Python só muda quando o programa "
+                                                  "abre de novo.\n\nReiniciar agora?"):
+                self.reiniciar()
+
+        JanelaPython(self.root, config.carregar().python, salvar)
+
+    def reiniciar(self):
+        """Abre de novo pelo Iniciar.bat (que escolhe o Python) e fecha esta janela."""
+        log.info("Reiniciando pelo Iniciar.bat")
+        os.startfile(config.PASTA_DO_PROJETO / "Iniciar.bat")
+        self.root.destroy()
+
+    def abrir_log(self):
+        if ARQUIVO_LOG.exists():
+            os.startfile(ARQUIVO_LOG)
+        else:
+            messagebox.showinfo("Log", "O log ainda está vazio.")
+
+    # ==================================================================
+    # 8. Cópia final
     # ==================================================================
 
     def copiar(self):
@@ -576,31 +727,44 @@ class App:
         itens, para_verificar = [], 0
         for id_linha in self.tabela.get_children():
             linha = self.linhas[id_linha]
+            caminho, convertido = linha["caminho"], linha.get("convertido")
+            if linha["status"] == OUTRO:
+                itens.append(ItemCopia(caminho, "Outros formatos", caminho.name, True))
+                para_verificar += 1
+                continue
             sem_analise = linha["status"] in (NA_FILA, CANCELADO, ERRO) and not linha["manual"]
             if sem_analise:
                 # Sem análise não há nome confiável: vai com o nome original.
-                itens.append((linha["caminho"], "Sem análise", linha["caminho"].name, True))
+                nome = caminho.stem + ".pdf" if convertido else caminho.name
+                itens.append(ItemCopia(caminho, "Sem análise", nome, True, convertido))
                 para_verificar += 1
                 continue
             verificar = linha["status"] == BAIXA and not linha.get("conferida")
             para_verificar += verificar
             categoria = linha["campos"].get("tipo") or "Outros"
-            itens.append((linha["caminho"], categoria, linha["novo_nome"], verificar))
+            itens.append(ItemCopia(caminho, categoria, linha["novo_nome"], verificar, convertido))
 
         if not itens:
             messagebox.showwarning("Atenção", "Nenhum arquivo na lista.")
             return
 
-        aviso = (f"\n\n{para_verificar} arquivo(s) com dúvida, erro ou sem análise vão para "
-                 f"a pasta {PASTA_VERIFICAR}.") if para_verificar else ""
+        aviso = (f"\n\n{para_verificar} arquivo(s) com dúvida, erro, sem análise ou em "
+                 f"outros formatos vão para a pasta {PASTA_VERIFICAR}.") if para_verificar else ""
         confirmou = messagebox.askyesno(
             "Confirmar", f"Copiar {len(itens)} PDF(s) para:\n{destino}\n\n"
                          f"Subpastas por categoria. Originais não são alterados.{aviso}")
         if not confirmou:
+            log.info("Cópia não confirmada pela pessoa")
             return
 
+        log.info("Copiando %d item(ns) para %s (%d para %s)", len(itens), destino,
+                 para_verificar, PASTA_VERIFICAR)
         resultado = copiar(itens, destino)
-        mensagem = (f"Copiados: {len(resultado['copiados'])}"
+        log.info("Cópia: %d copiado(s), %d erro(s), registro em %s",
+                 len(resultado["copiados"]), len(resultado["erros"]), resultado["log"])
+        for e in resultado["erros"]:
+            log.error("Erro ao copiar %s: %s", e["origem"], e["erro"])
+        mensagem = (f"Copiados: {len(resultado['copiados'])} item(ns)"
                     f" ({para_verificar} em {PASTA_VERIFICAR})\n"
                     f"Erros: {len(resultado['erros'])}")
         if resultado["erros"]:
@@ -614,7 +778,17 @@ class App:
             os.startfile(destino)
 
 def main():
+    registro.iniciar()
+    log.info("Programa aberto")
     root = tk.Tk()
+
+    def erro_na_janela(tipo, valor, tb):
+        # Sem isto, um erro num botão só aparecia no terminal e a pessoa não via nada.
+        log.error("Erro na janela", exc_info=(tipo, valor, tb))
+        messagebox.showerror("Erro inesperado",
+                             f"{tipo.__name__}: {valor}\n\nOs detalhes ficaram em:\n{ARQUIVO_LOG}")
+
+    root.report_callback_exception = erro_na_janela
     try:
         ttk.Style().theme_use("vista")   # visual nativo do Windows
     except tk.TclError:

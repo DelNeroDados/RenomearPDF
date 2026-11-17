@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------
-# Segredos: a chave da API mora aqui e nunca pode ir para o GitHub.
-# O .env.example (modelo sem chave) é a exceção e deve ser versionado.
+# Segredos: a chave da API mora em config/.env e nunca pode ir para o GitHub.
+# O config/.env.example (modelo sem chave) é a exceção e deve ser versionado.
 # ------------------------------------------------------------------
 .env
 .env.*
@@ -16,6 +16,12 @@ out/
 
 # Cache das análises (SQLite) e memória do último modelo usado.
 .cache/
+
+# Diário do programa: tem nomes de arquivos e pastas desta máquina.
+logs/
+
+# Categorias e áreas personalizadas pelo menu Configurações (config/listas.json).
+listas.json
 
 # Versões antigas guardadas localmente; uma delas tinha chave em texto plano.
 _old_/

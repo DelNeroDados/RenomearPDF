@@ -34,9 +34,13 @@ class InfoPDF:
     erro: str = ""
 
 
-def listar_pdfs(pasta: Path, recursivo: bool, ignorar: Path | None = None) -> list[Path]:
+# Arquivos que o Windows e o Office criam sozinhos; não são documentos de ninguém.
+LIXO_DO_SISTEMA = {"thumbs.db", "desktop.ini", ".ds_store"}
+
+
+def listar_arquivos(pasta: Path, recursivo: bool, ignorar: Path | None = None) -> list[Path]:
     """
-    Todos os PDFs da pasta, em ordem alfabética.
+    Todos os arquivos da pasta (PDFs, e-books e o resto), em ordem alfabética.
 
     `ignorar` serve para pular a pasta de saída. Sem isso, rodar o programa duas
     vezes na mesma pasta faria ele analisar as próprias cópias.
@@ -44,12 +48,18 @@ def listar_pdfs(pasta: Path, recursivo: bool, ignorar: Path | None = None) -> li
     ignorar = ignorar.resolve() if ignorar else None
     encontrados = []
     for arquivo in pasta.glob("**/*" if recursivo else "*"):
-        if not arquivo.is_file() or arquivo.suffix.lower() != ".pdf":
+        if not arquivo.is_file() or arquivo.name.lower() in LIXO_DO_SISTEMA:
+            continue
+        if arquivo.name.startswith("~$"):   # temporário de documento aberto no Office
             continue
         if ignorar and ignorar in arquivo.resolve().parents:
             continue
         encontrados.append(arquivo)
     return sorted(encontrados, key=lambda p: str(p).lower())
+
+
+def eh_pdf(caminho: Path) -> bool:
+    return caminho.suffix.lower() == ".pdf"
 
 
 def hash_arquivo(caminho: Path) -> str:

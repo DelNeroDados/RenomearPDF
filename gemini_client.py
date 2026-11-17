@@ -21,7 +21,8 @@ from google.genai import errors, types
 
 from config import NIVEIS, NIVEL_NORMAL, Nivel
 from pdf_tools import InfoPDF
-from schema import MetadadosPDF
+from schema import (AREAS_PADRAO, CATEGORIAS_PADRAO, MetadadosPDF, esquema_para_ia,
+                    para_texto_simples)
 
 # Erros que valem uma nova tentativa. O resto (chave errada, pedido malformado)
 # não melhora com insistência, então desistimos na hora.
@@ -59,7 +60,7 @@ class ClienteGemini:
                  gastar uma chamada batendo neles de novo até a cota renovar.
         """
         if not api_key:
-            raise ValueError("GEMINI_API_KEY não configurada no .env")
+            raise ValueError("GEMINI_API_KEY não configurada (menu Configurações → Chave da API…)")
 
         self.client = genai.Client(api_key=api_key,
                                    http_options=types.HttpOptions(timeout=TIMEOUT_MS))
@@ -76,6 +77,10 @@ class ClienteGemini:
         self.chamadas = 0
         self.tokens_usados = 0
         self.uso_por_modelo: Counter = Counter()
+
+        # Listas atuais da pessoa (menu Configurações); a janela atualiza antes de cada rodada.
+        self.categorias: list[str] = list(CATEGORIAS_PADRAO)
+        self.areas: list[str] = list(AREAS_PADRAO)
 
         # A interface substitui esta função para exibir avisos ("trocando de modelo...").
         self.ao_aviso = lambda mensagem: None
@@ -156,7 +161,8 @@ class ClienteGemini:
         return types.GenerateContentConfig(
             system_instruction=INSTRUCOES,
             response_mime_type="application/json",
-            response_schema=MetadadosPDF,   # o Gemini é obrigado a seguir este formato
+            # O Gemini é obrigado a seguir este formato, com as categorias atuais.
+            response_schema=esquema_para_ia(tuple(self.categorias), tuple(self.areas)),
             temperature=0.1,                # catalogar não pede criatividade
             **extra,
         )
@@ -179,7 +185,7 @@ class ClienteGemini:
                 resposta = self.client.models.generate_content(
                     model=modelo, contents=conteudo, config=self._config(nivel, modelo))
                 self._registrar_sucesso(modelo, resposta)
-                return _ler_resposta(resposta), modelo
+                return _ler_resposta(resposta, self.categorias), modelo
 
             except ValueError:
                 # Resposta fora do formato. Com saída estruturada é raro; tenta de novo.
@@ -372,10 +378,12 @@ def descrever_erro(erro: Exception) -> str:
 # Pequenos utilitários
 # ----------------------------------------------------------------------
 
-def _ler_resposta(resposta) -> MetadadosPDF:
+def _ler_resposta(resposta, categorias=CATEGORIAS_PADRAO) -> MetadadosPDF:
     if isinstance(resposta.parsed, MetadadosPDF):
-        return resposta.parsed
-    return MetadadosPDF.model_validate_json(resposta.text)
+        dados = resposta.parsed
+    else:
+        dados = MetadadosPDF.model_validate_json(resposta.text)
+    return para_texto_simples(dados, categorias)
 
 
 def _dormir(segundos: float, cancelado: threading.Event | None) -> None:

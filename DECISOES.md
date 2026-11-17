@@ -137,8 +137,8 @@ O programa é uma ferramenta de mesa, usada por quem baixa a pasta e roda
 ## 4. O caminho de um PDF, do início ao fim
 
 1. **A pessoa escolhe a pasta e clica em Analisar** (`gui.analisar`).
-   O programa lista os PDFs (`pdf_tools.listar_pdfs`) e já desenha a tabela
-   inteira, com todas as linhas em ⏳. Ver a lista na hora tranquiliza: mostra
+   O programa lista todos os arquivos (`pdf_tools.listar_arquivos`) e já desenha
+   a tabela inteira: PDFs e e-books em ⏳, o resto com 📎. Ver a lista na hora tranquiliza: mostra
    que o programa entendeu o que tem para fazer.
 
 2. **Uma thread conecta ao Gemini** (`gui._iniciar_rodada`). Ela lista os
@@ -149,8 +149,11 @@ O programa é uma ferramenta de mesa, usada por quem baixa a pasta e roda
 
 4. **Para cada PDF** (`pipeline.analisar_um`):
    - calcula o hash do arquivo;
+   - se for e-book, converte para PDF (`conversao.converter`), ou reaproveita a
+     conversão guardada em `.cache/convertidos`;
    - **se o hash está no cache, devolve na hora** e pula todo o resto;
-   - senão, lê o PDF, pega o texto e recorta as 5 primeiras páginas;
+   - senão, lê o PDF, pega o texto e recorta as primeiras páginas (3 a 15,
+     conforme o nível de esforço);
    - espera a sua vez no limitador de taxa;
    - manda o recorte ao Gemini e recebe um `MetadadosPDF`;
    - guarda no cache.
@@ -164,7 +167,9 @@ O programa é uma ferramenta de mesa, usada por quem baixa a pasta e roda
    linhas da lista.
 
 8. **A pessoa clica em Copiar** (`organizer.copiar`): cada arquivo é copiado
-   para `saída/Categoria/Novo nome.pdf`, sem sobrescrever nada, e um log é gravado.
+   para `saída/Categoria/Novo nome.pdf`, ou para `saída/.verificar/...` se não
+   for confiável, sem sobrescrever nada, e um log é gravado. Um e-book gera duas
+   cópias com o mesmo nome: o PDF e o original.
 
 A ordem do passo 4 importa. O cache é consultado **antes** de abrir o PDF
 porque calcular um hash é muito mais rápido do que extrair texto e montar um
@@ -237,6 +242,23 @@ páginas**. Essa última é o que viabiliza enviar o recorte ao Gemini.
 
 E a qualidade do texto extraído pesa pouco aqui: quem lê o PDF de verdade é o
 Gemini. O texto do `pypdf` só é usado como plano B.
+
+### PyMuPDF só para os e-books
+
+Depois, apareceu uma necessidade que o `pypdf` não cobre: converter EPUB e MOBI
+para PDF. As alternativas eram:
+
+| Opção | Por que não |
+|---|---|
+| **Calibre** (`ebook-convert`) | A melhor conversão, mas é um programa de 200 MB que a pessoa teria de instalar à parte, e o programa teria de achá-lo no computador. |
+| **ebooklib + conversor de HTML** | Python puro só no EPUB; o MOBI exigiria outra biblioteca, e os conversores de HTML para PDF ou precisam do GTK no Windows (WeasyPrint) ou entendem pouco CSS (xhtml2pdf). |
+| **PyMuPDF** | Abre EPUB, MOBI, AZW3 e FB2 sozinho e gera o PDF em uma chamada. Instala com `pip`, sem programa externo. |
+
+O PyMuPDF venceu, e o que pesou contra ele antes continua valendo: a licença
+AGPL. Para um programa pessoal, de código aberto, isso não é problema. Quem
+quiser distribuir o programa dentro de um produto fechado precisa olhar isso.
+Por isso ele ficou restrito a `conversao.py`: o resto continua usando o `pypdf`,
+e tirar o PyMuPDF significaria só perder a conversão.
 
 ### Pydantic
 
@@ -619,6 +641,14 @@ Ele lembra os nomes escolhidos na mesma leva, para dois arquivos novos com o
 mesmo nome também não se atropelarem, e compara ignorando maiúsculas, porque o
 Windows também ignora.
 
+### E-books: o PDF e o original juntos
+
+O PDF convertido é o que entra no fluxo (a IA lê, o nome é montado), mas o
+original vai junto, com o mesmo nome e a extensão dele. O EPUB continua sendo o
+melhor formato para ler no celular ou no Kindle, e a conversão perde parte do
+visual. Se o PDF ganhar um "(2)" por já existir outro com o mesmo nome, o
+original ganha o mesmo número, para os dois continuarem lado a lado.
+
 ### Subpastas por categoria
 
 Artigos, Teses, Dissertações... A categoria vem de uma lista fechada no
@@ -649,9 +679,11 @@ problema: o arquivo pulado sumia do resultado sem ninguém perceber (o log só
 registrava o que foi copiado), e o de confiança baixa ia para a pasta final com
 um nome como "Outros-Documento sem título.pdf".
 
-Agora tudo é copiado, mas o que não é confiável vai para `.verificar` dentro da
-saída: as linhas ⚠ com o nome sugerido, e as que não têm análise com o nome
-original, em `.verificar/Sem análise`. Nada se perde e nada duvidoso se mistura
+Agora tudo é copiado, inclusive o que não é PDF, mas o que não é confiável vai
+para `.verificar` dentro da saída: as linhas ⚠ com o nome sugerido, e as que não têm análise com o nome
+original, em `.verificar/Sem análise`. Arquivos que não são PDF nem e-book
+(DOCX, imagens, ZIP) não vão para a IA e vão para `.verificar/Outros formatos`,
+também com o nome original. Nada se perde e nada duvidoso se mistura
 com o que está certo. Uma linha que a pessoa editou conta como conferida e vai
 para a pasta normal.
 
@@ -661,6 +693,12 @@ para a pasta normal.
 
 - **Arquivo `.env`**: é o formato mais conhecido para guardar segredos fora do
   código, e o `.gitignore` o bloqueia.
+- **Tudo o que é da pessoa fica em `config/`**: a chave, o Python escolhido e as
+  listas de categorias e áreas. O log fica em `logs/` e as análises em `.cache/`.
+  Na raiz ficam só o código e o `Iniciar.bat`, e levar as configurações para
+  outra cópia é copiar uma pasta. A alternativa era o `%APPDATA%` do Windows,
+  que é o padrão para programas instalados, mas esconde os arquivos e não
+  combina com um programa portátil, que roda de qualquer pasta.
 - **Variável de ambiente vence o `.env`**: assim dá para trocar a chave
   temporariamente sem editar arquivo nenhum.
 - **Tudo tem padrão, menos a chave**: o programa funciona com um `.env` de uma

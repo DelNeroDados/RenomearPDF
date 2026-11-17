@@ -8,26 +8,22 @@ tese o autor é o aluno e não o orientador.
 """
 
 from enum import Enum
+from functools import lru_cache
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
+# As listas que vêm com o programa. A pessoa pode mudá-las pelo menu
+# Configurações; o que ela escolher fica em listas.json (veja listas.py).
+CATEGORIAS_PADRAO = [
+    "Artigos", "Teses", "Dissertações", "Monografias e TCCs", "Livros", "Capítulos",
+    "Slides e Apresentações", "Apostilas e Material Didático", "Outros",
+]
 
-class TipoDocumento(str, Enum):
-    ARTIGO = "Artigos"
-    TESE = "Teses"
-    DISSERTACAO = "Dissertações"
-    MONOGRAFIA = "Monografias e TCCs"
-    LIVRO = "Livros"
-    CAPITULO = "Capítulos"
-    SLIDES = "Slides e Apresentações"
-    APOSTILA = "Apostilas e Material Didático"
-    OUTRO = "Outros"
+# Categoria de reserva: sempre existe, para quando nenhuma outra servir.
+OUTROS = "Outros"
 
-
-TIPOS = [t.value for t in TipoDocumento]
-
-AREAS_SUGERIDAS = [
+AREAS_PADRAO = [
     "Física", "Química", "Biologia", "Matemática", "Computação", "Engenharia",
     "Medicina", "Enfermagem", "Odontologia", "Saúde Pública", "Psicologia",
     "Educação", "Ensino de Ciências", "Filosofia", "História", "Sociologia",
@@ -52,10 +48,12 @@ class MetadadosPDF(BaseModel):
         "não o orientador. Lista vazia se não for possível identificar."
     ))
     ano: Optional[int] = Field(default=None, description="Ano de publicação ou defesa")
-    tipo_documento: TipoDocumento
+    # Aqui é texto livre, para o cache continuar valendo se a lista de categorias
+    # mudar. Quem prende a IA às categorias atuais é esquema_para_ia(), lá embaixo.
+    tipo_documento: str = Field(description="Categoria do documento")
     area: str = Field(description=(
         "Grande área do conhecimento em português, preferindo uma destas: "
-        + ", ".join(AREAS_SUGERIDAS)
+        + ", ".join(AREAS_PADRAO)
     ))
     subarea: Optional[str] = None
     idioma: Optional[str] = Field(default=None, description="Ex.: 'português', 'inglês'")
@@ -80,3 +78,28 @@ class MetadadosPDF(BaseModel):
         a = self.autores[0]
         extra = f" et al. (+{len(self.autores) - 1})" if len(self.autores) > 1 else ""
         return f"{a.nome} {a.sobrenome}".strip() + extra
+
+
+@lru_cache(maxsize=8)
+def esquema_para_ia(categorias: tuple, areas: tuple) -> type[MetadadosPDF]:
+    """
+    O formato enviado ao Gemini, montado com as listas atuais da pessoa.
+
+    A categoria vira uma lista fechada (enum): a IA é obrigada a escolher uma
+    delas. A lista de áreas entra só como sugestão, na descrição do campo.
+    """
+    Categoria = Enum("Categoria", {f"C{i}": c for i, c in enumerate(categorias)}, type=str)
+    return create_model(
+        "MetadadosPDF", __base__=MetadadosPDF,
+        tipo_documento=(Categoria, Field(description="Categoria do documento")),
+        area=(str, Field(description="Grande área do conhecimento em português, "
+                                     "preferindo uma destas: " + ", ".join(areas))),
+    )
+
+
+def para_texto_simples(dados: MetadadosPDF, categorias) -> MetadadosPDF:
+    """Converte a resposta para o MetadadosPDF comum, com a categoria como texto."""
+    bruto = dados.model_dump(mode="json")
+    if bruto["tipo_documento"] not in categorias:
+        bruto["tipo_documento"] = OUTROS
+    return MetadadosPDF.model_validate(bruto)

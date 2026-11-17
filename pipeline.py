@@ -15,8 +15,11 @@ from queue import Queue
 
 from google.genai import errors
 
+import config
 from cache import Cache
 from config import NIVEIS
+from registro import log
+from conversao import converter, eh_ebook
 from gemini_client import Cancelado, ClienteGemini, descrever_erro
 from pdf_tools import InfoPDF, hash_arquivo, ler_pdf
 from schema import MetadadosPDF
@@ -38,6 +41,7 @@ class Resultado:
     modelo: str = ""
     nivel: int = 0
     repetir: bool = True   # False quando insistir não adianta (PDF ilegível, chave errada)
+    convertido: Path | None = None   # PDF gerado a partir de um e-book
 
 
 class Processador:
@@ -86,13 +90,18 @@ class Processador:
     def _analisar_um_e_avisar(self, caminho: Path) -> None:
         if self.cancelado.is_set():
             return
+        if eh_ebook(caminho):
+            # A conversão leva de segundos a mais de meio minuto: a janela avisa.
+            self._emitir("etapa", (caminho, f"convertendo {caminho.name} para PDF"))
         try:
             resultado = analisar_um(caminho, self.cliente, self.cache, self.nivel,
                                     self.cancelado, self.instrucoes.get(caminho, ""),
                                     self.usar_cache, self.escalar)
         except Cancelado:
+            log.info("Interrompido pelo cancelamento: %s", caminho.name)
             return
         except Exception as erro:
+            log.exception("Erro inesperado em %s", caminho.name)
             # Uma thread que morre calada deixa a linha presa em ⏳ para sempre.
             resultado = Resultado(caminho, ERRO, erro=descrever_erro(erro))
         self._emitir("resultado", resultado)
@@ -101,9 +110,30 @@ class Processador:
         self.fila.put((self.geracao, tipo, carga))
 
 
+PASTA_CONVERTIDOS = config.PASTA_CACHE / "convertidos"
+
+
 def analisar_um(caminho: Path, cliente: ClienteGemini, cache: Cache, nivel: int,
                 cancelado: threading.Event, instrucao: str = "",
-                usar_cache: bool = True, escalar: bool = False) -> Resultado:
+                usar_cache: bool = True, escalar: bool = False,
+                pasta_convertidos: Path = PASTA_CONVERTIDOS) -> Resultado:
+    """E-books são convertidos para PDF primeiro; o resto do caminho é o mesmo."""
+    sha = hash_arquivo(caminho)
+    convertido = None
+    if eh_ebook(caminho):
+        try:
+            convertido = converter(caminho, sha, pasta_convertidos)
+        except Exception as erro:
+            return Resultado(caminho, ERRO, erro=f"Não foi possível converter para PDF: {erro}",
+                             repetir=False)
+    resultado = _analisar_pdf(caminho, sha, convertido or caminho, cliente, cache, nivel,
+                              cancelado, instrucao, usar_cache, escalar)
+    resultado.convertido = convertido
+    return resultado
+
+
+def _analisar_pdf(caminho, sha, pdf, cliente, cache, nivel, cancelado, instrucao,
+                  usar_cache, escalar) -> Resultado:
     """
     O caminho completo de um único PDF:
     hash -> cache? -> lê o PDF -> Gemini -> (dúvida? nível seguinte) -> cache.
@@ -114,7 +144,6 @@ def analisar_um(caminho: Path, cliente: ClienteGemini, cache: Cache, nivel: int,
     O cache é consultado antes de abrir o PDF de propósito: calcular o hash é
     bem mais rápido do que extrair texto e páginas.
     """
-    sha = hash_arquivo(caminho)
     niveis = [nivel]
     if escalar and nivel + 1 < len(NIVEIS):
         niveis.append(nivel + 1)
@@ -134,7 +163,7 @@ def analisar_um(caminho: Path, cliente: ClienteGemini, cache: Cache, nivel: int,
 
     tentado = nivel
     for n in niveis:
-        resultado = _analisar_no_nivel(caminho, sha, n, cliente, cancelado, instrucao)
+        resultado = _analisar_no_nivel(caminho, pdf, sha, n, cliente, cancelado, instrucao)
         if resultado.dados:   # falha de cota não conta como nível tentado
             tentado = n
         melhor = _o_melhor(melhor, resultado)
@@ -147,8 +176,9 @@ def analisar_um(caminho: Path, cliente: ClienteGemini, cache: Cache, nivel: int,
     return melhor
 
 
-def _analisar_no_nivel(caminho, sha, n, cliente, cancelado, instrucao) -> Resultado:
-    info = ler_pdf(caminho, NIVEIS[n].paginas, sha)
+def _analisar_no_nivel(caminho, pdf, sha, n, cliente, cancelado, instrucao) -> Resultado:
+    info = ler_pdf(pdf, NIVEIS[n].paginas, sha)
+    info.caminho = caminho   # a IA recebe o nome do arquivo original como pista
     if info.erro:
         return Resultado(caminho, ERRO, info=info, erro=info.erro, nivel=n, repetir=False)
     try:

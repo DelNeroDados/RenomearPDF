@@ -44,6 +44,13 @@ Para cada PDF da pasta escolhida:
 Funciona também com **PDFs escaneados** (imagens sem texto), porque o Gemini lê a página
 como imagem.
 
+**E-books (EPUB, MOBI, AZW3, FB2)** são convertidos para PDF antes da análise. Na cópia, vão
+os dois com o mesmo nome novo: o PDF e o e-book original.
+
+**Os outros arquivos da pasta** (DOCX, imagens, ZIP…) aparecem na tabela com 📎, não vão
+para a IA e são copiados, com o nome original, para `.verificar\Outros formatos`. Assim,
+tudo o que está na pasta chega à saída.
+
 ---
 
 ## 2. Instalação (primeira vez)
@@ -68,6 +75,8 @@ Abra o PowerShell **dentro da pasta do projeto** e rode:
 python -m pip install -r requirements.txt
 ```
 
+> Entre elas está o **PyMuPDF**, que converte os e-books para PDF.
+>
 > O pacote certo é o **google-genai** (SDK novo). O antigo `google-generativeai` está
 > descontinuado: não instale os dois juntos.
 
@@ -75,8 +84,8 @@ python -m pip install -r requirements.txt
 
 1. Acesse <https://aistudio.google.com/apikey> e clique em **Create API key**.
 2. Copie a chave.
-3. Na pasta do projeto, copie o arquivo `.env.example` e renomeie a cópia para `.env`.
-4. Abra o `.env` no Bloco de Notas e cole a chave:
+3. Na pasta `config` do programa, copie o arquivo `.env.example` e renomeie a cópia para `.env`.
+4. Abra o `config\.env` no Bloco de Notas e cole a chave:
 
    ```text
    GEMINI_API_KEY=cole_sua_chave_aqui
@@ -84,7 +93,10 @@ python -m pip install -r requirements.txt
 
 5. Salve.
 
-> O `.env` é bloqueado pelo `.gitignore` e **nunca** vai para o GitHub. Não escreva a chave
+Depois, para trocar a chave, não precisa mexer no arquivo: use o menu
+**Configurações → Chave da API…** (veja a [seção 4](#4-conhecendo-a-tela)).
+
+> O `config\.env` é bloqueado pelo `.gitignore` e **nunca** vai para o GitHub. Não escreva a chave
 > em nenhum outro arquivo.
 
 ---
@@ -92,7 +104,7 @@ python -m pip install -r requirements.txt
 ## 3. Como abrir o programa
 
 **Jeito mais fácil:** dê dois cliques em **`Iniciar.bat`**. Ele encontra o Python,
-instala as bibliotecas que faltarem, cria o `.env` (abrindo o Bloco de Notas para você
+instala as bibliotecas que faltarem, cria o `config\.env` (abrindo o Bloco de Notas para você
 colar a chave) e abre o programa. Na prática, ele faz sozinho os passos 2.2 e 2.3.
 
 > Para só conferir se está tudo instalado, sem abrir a janela: `Iniciar.bat --testar`.
@@ -125,6 +137,20 @@ A janela **"Renomeador de PDFs acadêmicos — Gemini"** se abre.
 │ [████████░░░░] Analisando 12/18 com gemini-…              [✔ Copiar e renomear]    │
 └───────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Menu Configurações
+
+| Opção | Para quê |
+|---|---|
+| **Categorias…** | Adicionar, remover ou mudar a ordem das categorias. Cada categoria vira uma subpasta na cópia, e a IA é obrigada a escolher uma delas. `Outros` sempre existe, para quando nenhuma serve. |
+| **Áreas…** | Adicionar ou remover áreas. Elas são sugestões: a IA prefere uma delas, mas pode responder outra, e na tabela você pode digitar qualquer área. |
+| **Chave da API…** | Trocar a chave do Gemini. O programa testa a chave antes de gravar no `config\.env` (o teste não gasta cota), e a análise seguinte já usa a chave nova. |
+| **Python…** | Escolher qual Python abre o programa: **Automático** (o portátil `.python_embed`, se existir; senão, o instalado), um dos encontrados no computador, ou um `python.exe` qualquer (**Procurar…**). O programa testa antes de gravar e oferece reiniciar, porque a troca só vale quando ele abre de novo. Se faltarem bibliotecas no Python escolhido, o `Iniciar.bat` instala na abertura seguinte. |
+| **Abrir o log** | Abre o `logs\renomearpdf.log`, o registro de tudo o que aconteceu: arquivos analisados, conversões, cancelamentos, cópias e erros. |
+
+As listas ficam em `config\listas.json`. **Restaurar padrão** volta
+para as listas originais. A mudança vale para as próximas análises: arquivos que já estão no
+cache mantêm o que a IA respondeu antes. Para refazer um deles, use **Reanalisar**.
 
 ### Parte de cima
 
@@ -179,13 +205,14 @@ arquivos difíceis gastam a análise mais cara.
 | ↺ | texto azul | Analisado antes; veio do [cache](#10-cache-análises-guardadas), sem gastar cota |
 | ⚠ | **amarelo** | A IA ficou em dúvida (confiança abaixo de 60%). **Confira esta linha.** Se não editar, a cópia vai para `.verificar`. |
 | ✖ | **vermelho** | Erro: arquivo corrompido, protegido por senha ou falha da IA. A cópia vai para `.verificar\Sem análise`, com o nome original. |
+| 📎 | cinza | Não é PDF nem e-book. Não vai para a IA; na cópia, vai para `.verificar\Outros formatos` com o nome original. |
 | ⏹ | cinza | Não analisado porque você clicou em Cancelar. Clique em **▶ Analisar** de novo (o que já foi feito vem do cache) ou selecione e use **Reanalisar**. |
 
 ### Painel direito
 
 | Botão | Para quê |
 |---|---|
-| **📄 Abrir PDF** | Abre o arquivo selecionado no leitor de PDF do Windows. |
+| **📄 Abrir PDF** | Abre o arquivo selecionado no leitor de PDF do Windows. Para um e-book, abre o PDF convertido. |
 | **Ver texto** | Mostra o texto das 3 primeiras páginas (útil para copiar e colar). |
 | **↻ Reanalisar com instrução…** | Manda as linhas selecionadas de novo para a IA, com uma dica sua. Veja a [seção 6.3](#63-reanalisar-com-instrução). |
 
@@ -285,12 +312,16 @@ A reanálise gasta uma chamada da API e substitui o resultado guardado no cache.
 
 ### 6.4. Linhas com erro (✖)
 
-Linhas com erro são **puladas na cópia**, porque não há dados confiáveis para o nome.
-Para incluir uma delas:
+Linhas com erro **também são copiadas**, mas com o nome original e para
+`.verificar\Sem análise`, porque não há dados confiáveis para um nome novo. Para que uma
+delas vá para a pasta normal:
 
 - **Reanalise** (às vezes o erro foi temporário); ou
 - **edite o Novo nome** à mão. A linha passa a ser copiada com esse nome, na categoria
   escolhida (o padrão é `Outros`).
+
+Um e-book que não pôde ser convertido (protegido por DRM, por exemplo) também fica ✖ e vai
+para `.verificar\Sem análise`.
 
 ---
 
@@ -325,7 +356,7 @@ refeitas, menos as de nome manual.
 - O nome é limitado a 150 caracteres.
 - Siglas e nomes próprios do título são preservados (`DNA`, `Einstein`).
 
-Para mudar o modelo **padrão** (o que aparece ao abrir), configure `MODELO_NOME` no `.env`.
+Para mudar o modelo **padrão** (o que aparece ao abrir), configure `MODELO_NOME` no `config\.env`.
 
 ---
 
@@ -340,13 +371,18 @@ C:\Artigos\out\
 │   └── Física-Souza-2020-Ensino de física quântica no Brasil.pdf
 ├── Teses\
 │   └── Educação-Medeiros-2011-Formação de professores de ciências.pdf
+├── Livros\
+│   ├── História-Reinhardt-2005-Alexandre VI.pdf      (convertido do EPUB)
+│   └── História-Reinhardt-2005-Alexandre VI.epub     (o original, com o mesmo nome)
 ├── Dissertações\
 ├── Slides e Apresentações\
 ├── .verificar\
 │   ├── Livros\
 │   │   └── Outros-Documento sem título.pdf     (confiança baixa)
-│   └── Sem análise\
-│       └── arquivo_que_deu_erro.pdf            (nome original)
+│   ├── Sem análise\
+│   │   └── arquivo_que_deu_erro.pdf            (nome original)
+│   └── Outros formatos\
+│       └── anotacoes.docx                      (não é PDF nem e-book)
 └── _logs\
     └── copia_20261116_153012.json
 ```
@@ -367,7 +403,19 @@ Slides e Apresentações · Apostilas e Material Didático · Outros
 
 ## 9. Configurações avançadas (.env)
 
-Todas são opcionais, menos a chave. Edite o `.env` e **reabra o programa**.
+Todas são opcionais, menos a chave. Edite o `config\.env` e **reabra o programa**.
+
+O que é seu fica separado do código, em três pastas dentro do programa:
+
+| Pasta | O que guarda |
+|---|---|
+| `config\` | `.env` (chave, Python escolhido e as opções abaixo) e `listas.json` (categorias e áreas) |
+| `logs\` | `renomearpdf.log`, o registro do que aconteceu |
+| `.cache\` | análises já feitas e os PDFs convertidos dos e-books |
+
+Para levar suas configurações para outra cópia do programa, copie a pasta `config`. Versões
+antigas guardavam o `.env` e o `listas.json` na raiz; eles são movidos para `config\`
+sozinhos na primeira abertura.
 
 ```text
 GEMINI_API_KEY=sua_chave
@@ -384,6 +432,7 @@ MODELO_NOME={area}-{sobrenome}-{ano}-{titulo}
 | `GEMINI_MODEL` | vazio | Modelo do Gemini. Vazio = escolhe sozinho conforme o **Esforço da IA**, do mais novo para o mais velho, pulando os que estão sem cota hoje (veja a [seção 11](#11-custos-cotas-e-privacidade)). Preenchido, ele é sempre o primeiro a ser tentado. | Para fixar um modelo, ex.: `gemini-2.5-flash` ou um modelo `pro` (mais preciso, mais lento e mais caro) |
 | `GEMINI_RPM` | `10` | Máximo de requisições por minuto | Suba (ex.: `300`) se o projeto da chave tiver **faturamento ativo** no Google Cloud. Se aparecerem muitos erros de cota, abaixe. |
 | `GEMINI_WORKERS` | `4` | PDFs analisados em paralelo | Suba junto com o RPM em pastas grandes |
+| `PYTHON` | vazio | Python usado pelo `Iniciar.bat`. Vazio = automático | Para usar outro Python; mais fácil pelo menu **Configurações → Python…** |
 | `NIVEL_IA` | `1` | Posição inicial do controle **Esforço da IA**: 0 Econômico, 1 Normal, 2 Caprichado, 3 Máximo | Se você quase sempre usa outro nível |
 | `MODELO_NOME` | `{area}-{sobrenome}-{ano}-{titulo}` | Modelo de nome padrão | Ao gosto |
 
@@ -442,8 +491,9 @@ faturamento ativo e sem conferir os termos de uso.
 |---|---|---|
 | `ModuleNotFoundError: No module named 'google'` ou `'pypdf'` | Bibliotecas não instaladas | Rode o comando da [seção 2.2](#22-bibliotecas) |
 | `'python' não é reconhecido` | Python não instalado ou fora do PATH | Instale pelo python.org marcando *Add to PATH*, ou use o caminho completo do `python.exe` |
-| Mensagem **"Chave recusada (401)"** ou **"(403)"** | Chave inválida ou revogada | Gere uma chave nova no AI Studio e troque no `.env` |
-| **"GEMINI_API_KEY não configurada"** | Falta o `.env` ou a linha da chave | Siga a [seção 2.3](#23-chave-da-api-do-gemini) |
+| Mensagem **"Chave recusada (401)"** ou **"(403)"** | Chave inválida ou revogada | Gere uma chave nova no AI Studio e troque em **Configurações → Chave da API…** |
+| Algo deu errado e você não sabe o quê | — | **Configurações → Abrir o log**: o `logs\renomearpdf.log` registra cada etapa e os erros |
+| **"GEMINI_API_KEY não configurada"** | Falta o `config\.env` ou a linha da chave | Siga a [seção 2.3](#23-chave-da-api-do-gemini) |
 | **"Modelo 'X' não disponível para esta chave"** | `GEMINI_MODEL` com nome errado | Deixe `GEMINI_MODEL=` vazio ou corrija o nome |
 | Muitas linhas ✖ com **"Cota da API esgotada (429)"** | Limite por minuto estourado | Abaixe `GEMINI_RPM`, espere e reanalise as linhas com erro |
 | ✖ **"Cota diária esgotada em todos os modelos"** | Nível gratuito; o limite do dia acabou | Tente no dia seguinte ou ative o faturamento |
@@ -470,6 +520,19 @@ Se não quiser duplicatas, esvazie a pasta de saída antes, ou escolha outra.
 
 **Posso escolher uma pasta de rede ou pendrive?**
 Pode. Qualquer pasta que o Windows consiga abrir.
+
+**Todos os arquivos da pasta são copiados?**
+Sim, inclusive os que não são PDF. As exceções: linhas que você tirou da tabela com
+Delete, arquivos em subpastas quando "Incluir subpastas" está desmarcado, e falhas do
+próprio Windows na cópia (arquivo aberto em outro programa, caminho longo demais, falta
+de permissão), que aparecem no resumo e no log. Arquivos de sistema como `Thumbs.db` e
+`desktop.ini` são ignorados.
+
+**Os e-books ficam bons em PDF?**
+O texto, as imagens e o sumário ficam corretos, em página A4. O visual é simples, como o de
+um leitor de e-book. Livros com DRM (comprados em lojas como a da Amazon) não convertem. Os
+PDFs convertidos ficam guardados em `.cache\convertidos`; pode apagar essa pasta quando
+quiser liberar espaço.
 
 **Funciona com PDF escaneado (foto de página)?**
 Sim. O Gemini lê a imagem da página. A qualidade depende da nitidez do escaneamento.
@@ -498,13 +561,18 @@ Não para a análise, que precisa do Gemini. A cópia funciona offline, mas depe
 | `gui.py` | A janela (Tkinter + `ttk.Treeview`) |
 | `pipeline.py` | Análise paralela em segundo plano e fila de eventos para a janela |
 | `gemini_client.py` | Conversa com o Gemini: cota, novas tentativas, troca de modelo, saída estruturada |
-| `schema.py` | Formato da resposta pedida ao Gemini (Pydantic) |
-| `pdf_tools.py` | Leitura local dos PDFs, recorte das primeiras páginas, hash |
+| `schema.py` | Formato da resposta pedida ao Gemini (Pydantic), montado com as categorias atuais |
+| `listas.py` | Categorias e áreas editáveis, gravadas em `config\listas.json` |
+| `dialogos.py` | Janelas do menu Configurações: editar listas e trocar a chave |
+| `registro.py` | O log do programa (`logs\renomearpdf.log`) e o registro de erros não tratados |
+| `pdf_tools.py` | Lista os arquivos da pasta; leitura local dos PDFs, recorte das primeiras páginas, hash |
+| `conversao.py` | Conversão de EPUB, MOBI, AZW3 e FB2 para PDF (PyMuPDF) |
 | `cache.py` | SQLite com as análises já feitas |
 | `naming.py` | Modelo de nome e regras de nome de arquivo do Windows |
-| `organizer.py` | Cópia sem sobrescrever, com log |
-| `config.py` | Leitura do `.env` |
-| `Iniciar.bat` | Inicializador para Windows: acha o Python, instala dependências, cria o `.env` |
+| `organizer.py` | Cópia sem sobrescrever, com log; separa o que vai para `.verificar` |
+| `config.py` | Leitura do `config\.env` e gravação de valores nele (chave, Python) |
+| `pythons.py` | Encontra e testa os Pythons do computador |
+| `Iniciar.bat` | Inicializador para Windows: acha o Python, instala dependências, cria o `config\.env` |
 | `tests/` | Testes automáticos, com um Gemini falso (não usam internet nem cota) |
 
 ### Rodar os testes
@@ -516,6 +584,9 @@ python -m pytest tests -q
 ### Fluxo de uma análise
 
 ```text
+e-book ─► converte para PDF (guardado em .cache\convertidos)
+   │
+   ▼
 PDF ─► hash ─► está no cache? ──sim──► resultado (↺)
                     │não
                     ▼
@@ -531,4 +602,4 @@ PDF ─► hash ─► está no cache? ──sim──► resultado (↺)
 
 ### O que não vai para o Git
 
-`.env`, `.cache/`, `PDFs/`, `out/`, `_old_/` e qualquer `*.pdf` estão no `.gitignore`.
+`config/.env`, `config/listas.json`, `logs/`, `.cache/`, `PDFs/`, `out/`, `_old_/` e qualquer `*.pdf` estão no `.gitignore`. O `config/.env.example` vai, porque não tem chave.

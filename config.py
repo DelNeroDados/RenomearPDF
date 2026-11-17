@@ -1,8 +1,11 @@
 """
-Configurações do programa, lidas do arquivo .env (ou de variáveis de ambiente).
+Configurações do programa, lidas de config/.env (ou de variáveis de ambiente).
 
 Só GEMINI_API_KEY é obrigatória. As demais têm valores padrão pensados para a
-chave gratuita; veja o .env.example para a explicação de cada uma.
+chave gratuita; veja o config/.env.example para a explicação de cada uma.
+
+Tudo o que é da pessoa (chave, Python escolhido, listas) fica na pasta config/;
+o log fica em logs/ e as análises guardadas em .cache/.
 """
 
 import os
@@ -11,6 +14,11 @@ from pathlib import Path
 
 PASTA_DO_PROJETO = Path(__file__).resolve().parent
 PASTA_CACHE = PASTA_DO_PROJETO / ".cache"
+PASTA_CONFIG = PASTA_DO_PROJETO / "config"
+ARQUIVO_ENV = PASTA_CONFIG / ".env"
+
+# Versões antigas guardavam estes arquivos na raiz do programa.
+ARQUIVOS_DE_CONFIG = (".env", "listas.json")
 
 MODELO_NOME_PADRAO = "{area}-{sobrenome}-{ano}-{titulo}"
 
@@ -48,11 +56,13 @@ class Config:
     workers: int
     nivel: int
     modelo_nome: str
+    python: str = ""   # vazio = o Iniciar.bat escolhe sozinho
 
 
 def carregar() -> Config:
-    """Uma variável de ambiente do sistema vence o que estiver escrito no .env."""
-    arquivo = _ler_env(PASTA_DO_PROJETO / ".env")
+    """Uma variável de ambiente do sistema vence o que estiver escrito no config/.env."""
+    migrar_da_raiz()
+    arquivo = _ler_env(ARQUIVO_ENV)
 
     def ler(chave, padrao=""):
         return os.environ.get(chave) or arquivo.get(chave, padrao)
@@ -64,7 +74,55 @@ def carregar() -> Config:
         workers=_inteiro(ler("GEMINI_WORKERS"), 4),
         nivel=_nivel(ler("NIVEL_IA")),
         modelo_nome=ler("MODELO_NOME") or MODELO_NOME_PADRAO,
+        python=arquivo.get("PYTHON", ""),   # só do config/.env: é ele que o Iniciar.bat lê
     )
+
+
+def salvar_chave(chave: str, caminho: Path | None = None) -> None:
+    salvar_no_env("GEMINI_API_KEY", chave, caminho)
+
+
+def salvar_no_env(nome: str, valor: str, caminho: Path | None = None) -> None:
+    """
+    Grava NOME=valor no config/.env, trocando só essa linha. As outras linhas e os
+    comentários ficam como estão. Sem .env, parte do .env.example.
+    """
+    caminho = caminho or ARQUIVO_ENV
+    caminho.parent.mkdir(parents=True, exist_ok=True)
+    if caminho.exists():
+        linhas = caminho.read_text(encoding="utf-8").splitlines()
+    elif (exemplo := caminho.with_name(".env.example")).exists():
+        linhas = exemplo.read_text(encoding="utf-8").splitlines()
+    else:
+        linhas = []
+    nova = f"{nome}={valor.strip()}"
+    for i, linha in enumerate(linhas):
+        if linha.strip().startswith(f"{nome}="):
+            linhas[i] = nova
+            break
+    else:
+        linhas.insert(0, nova)
+    caminho.write_text("\n".join(linhas) + "\n", encoding="utf-8")
+
+
+def migrar_da_raiz() -> None:
+    """
+    Move para config/ o .env e o listas.json deixados na raiz por versões antigas.
+    Se já existir um em config/, o da raiz fica onde está (nada é sobrescrito).
+    O Iniciar.bat faz o mesmo antes de abrir o programa.
+    """
+    for nome in ARQUIVOS_DE_CONFIG:
+        antigo, novo = PASTA_DO_PROJETO / nome, PASTA_CONFIG / nome
+        if antigo.is_file() and not novo.exists():
+            PASTA_CONFIG.mkdir(parents=True, exist_ok=True)
+            antigo.replace(novo)
+
+
+def chave_mascarada(chave: str) -> str:
+    """Mostra só o começo e o fim: dá para reconhecer a chave sem expô-la."""
+    if not chave or chave == "cole_sua_chave_aqui":
+        return "(nenhuma)"
+    return f"{chave[:4]}…{chave[-4:]}" if len(chave) > 10 else "…"
 
 
 def _ler_env(caminho: Path) -> dict:

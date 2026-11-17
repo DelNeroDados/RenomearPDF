@@ -45,17 +45,17 @@ def montar_nome(modelo: str, campos: dict) -> str:
     return finalizar_nome(nome)
 
 
-def finalizar_nome(nome: str) -> str:
-    """Garante que o nome é aceito pelo Windows e termina em .pdf."""
+def finalizar_nome(nome: str, extensao: str = ".pdf") -> str:
+    """Garante que o nome é aceito pelo Windows e termina na extensão pedida."""
     nome = nome.strip()
-    if nome.lower().endswith(".pdf"):
-        nome = nome[:-4]
+    if extensao and nome.lower().endswith(extensao.lower()):
+        nome = nome[:-len(extensao)]
     nome = limpar_parte(nome)[:TAMANHO_MAXIMO].rstrip(" .-")
     if not nome:
         nome = "Sem titulo"
     if nome.split(".")[0].upper() in RESERVADOS:
         nome = "_" + nome
-    return nome + ".pdf"
+    return nome + extensao
 
 
 def limpar_parte(texto) -> str:
