@@ -15,13 +15,38 @@ PASTA_CACHE = PASTA_DO_PROJETO / ".cache"
 MODELO_NOME_PADRAO = "{area}-{sobrenome}-{ano}-{titulo}"
 
 
+@dataclass(frozen=True)
+class Nivel:
+    """Uma posição do controle "Esforço da IA" na janela."""
+    nome: str
+    familias: tuple       # famílias de modelo, na ordem de preferência
+    paginas: int          # páginas iniciais enviadas
+    raciocinio: str       # thinking_level do Gemini: MINIMAL, LOW, MEDIUM ou HIGH
+
+    @property
+    def descricao(self) -> str:
+        return f"{self.familias[0]}, {self.paginas} páginas, raciocínio {RACIOCINIO[self.raciocinio]}"
+
+
+RACIOCINIO = {"MINIMAL": "mínimo", "LOW": "baixo", "MEDIUM": "médio", "HIGH": "alto"}
+
+# Se a família preferida estiver sem cota, o programa desce para a próxima da lista.
+NIVEIS = [
+    Nivel("Econômico", ("flash-lite", "flash"), 3, "MINIMAL"),
+    Nivel("Normal", ("flash", "flash-lite"), 5, "LOW"),
+    Nivel("Caprichado", ("flash", "flash-lite"), 10, "HIGH"),
+    Nivel("Máximo", ("pro", "flash", "flash-lite"), 15, "HIGH"),
+]
+NIVEL_NORMAL = 1
+
+
 @dataclass
 class Config:
     api_key: str
     modelo: str
     rpm: int
     workers: int
-    paginas: int
+    nivel: int
     modelo_nome: str
 
 
@@ -37,7 +62,7 @@ def carregar() -> Config:
         modelo=ler("GEMINI_MODEL"),
         rpm=_inteiro(ler("GEMINI_RPM"), 10),
         workers=_inteiro(ler("GEMINI_WORKERS"), 4),
-        paginas=_inteiro(ler("PDF_PAGINAS"), 5),
+        nivel=_nivel(ler("NIVEL_IA")),
         modelo_nome=ler("MODELO_NOME") or MODELO_NOME_PADRAO,
     )
 
@@ -65,3 +90,10 @@ def _inteiro(valor, padrao: int) -> int:
         return max(1, int(valor))
     except (TypeError, ValueError):
         return padrao
+
+
+def _nivel(valor) -> int:
+    try:
+        return min(max(int(valor), 0), len(NIVEIS) - 1)
+    except (TypeError, ValueError):
+        return NIVEL_NORMAL

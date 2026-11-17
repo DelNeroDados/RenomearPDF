@@ -15,10 +15,11 @@ from queue import Empty, Queue
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import config
+from config import NIVEIS
 from cache import Cache
 from gemini_client import ClienteGemini, descrever_erro
 from naming import finalizar_nome, montar_nome
-from organizer import copiar
+from organizer import PASTA_VERIFICAR, copiar
 from pdf_tools import listar_pdfs, texto_preview
 from pipeline import BAIXA, CACHE, ERRO, OK, Processador, Resultado
 from schema import AREAS_SUGERIDAS, TIPOS
@@ -47,7 +48,12 @@ TEXTO_INICIAL = (
     "2. Clique em ▶ Analisar com IA.\n"
     "3. Revise a tabela. Duplo clique edita uma célula; Delete tira a linha.\n"
     "   ⚠ amarelo = a IA ficou em dúvida; ✖ vermelho = erro; ↺ = veio do cache.\n"
-    "4. Clique em Copiar e renomear. Os originais nunca são alterados.\n\n"
+    "4. Clique em Copiar e renomear. Os originais nunca são alterados.\n"
+    "   O que ficou em dúvida ou com erro também é copiado, mas para a pasta\n"
+    "   .verificar dentro da saída. Linha que você editou conta como conferida.\n\n"
+    "Esforço da IA: quanto mais à direita, mais páginas lidas, modelo mais forte\n"
+    "e mais cota gasta. Com 'Refazer dúvidas', o que voltar com erro ou\n"
+    "confiança baixa é refeito uma vez no nível seguinte.\n\n"
     "Campos do modelo de nome: {area} {sobrenome} {ano} {titulo} {tipo}"
 )
 
@@ -83,6 +89,9 @@ class App:
         self.var_subpastas = tk.BooleanVar(value=False)
         self.var_modelo_nome = tk.StringVar(value=self.cfg.modelo_nome)
         self.var_status = tk.StringVar(value="Escolha a pasta com os PDFs.")
+        self.var_nivel = tk.IntVar(value=self.cfg.nivel)
+        self.var_nivel_texto = tk.StringVar()
+        self.var_escalar = tk.BooleanVar(value=True)
 
         self._montar_topo()
         self._montar_centro()
@@ -119,6 +128,26 @@ class App:
         campo_modelo.grid(row=1, column=4, columnspan=2, sticky="ew", pady=(6, 0))
         campo_modelo.bind("<Return>", lambda _: self.reaplicar_modelo())
         campo_modelo.bind("<FocusOut>", lambda _: self.reaplicar_modelo())
+
+        ttk.Label(topo, text="Esforço da IA:").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        linha_nivel = ttk.Frame(topo)
+        linha_nivel.grid(row=2, column=1, columnspan=5, sticky="w", padx=5, pady=(6, 0))
+        ttk.Label(linha_nivel, text="Econômico").pack(side=tk.LEFT)
+        ttk.Scale(linha_nivel, from_=0, to=len(NIVEIS) - 1, length=180,
+                  variable=self.var_nivel, command=self._mover_nivel).pack(side=tk.LEFT, padx=6)
+        ttk.Label(linha_nivel, text="Máximo").pack(side=tk.LEFT)
+        ttk.Label(linha_nivel, textvariable=self.var_nivel_texto, width=48).pack(
+            side=tk.LEFT, padx=(12, 0))
+        ttk.Checkbutton(linha_nivel, text="Refazer dúvidas no nível acima",
+                        variable=self.var_escalar).pack(side=tk.LEFT, padx=(8, 0))
+        self._mover_nivel()
+
+    def _mover_nivel(self, _=None):
+        """O ttk.Scale anda em frações; aqui ele encaixa no nível mais próximo."""
+        nivel = round(float(self.var_nivel.get()))
+        self.var_nivel.set(nivel)
+        n = NIVEIS[nivel]
+        self.var_nivel_texto.set(f"{n.nome}: {n.descricao}")
 
     def _montar_centro(self):
         divisoria = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
@@ -245,19 +274,20 @@ class App:
         self.progresso.configure(maximum=self.total, value=0)
         self._modo_ocupado(True)
         self.var_status.set("Conectando ao Gemini…")
+        nivel, escalar = int(self.var_nivel.get()), self.var_escalar.get()
 
         def conectar_e_comecar():
             # Roda fora da thread da janela, então só conversa com ela pela fila.
             try:
                 if self.cliente is None:
                     cliente = ClienteGemini(self.cfg.api_key, self.cfg.modelo, self.cfg.rpm,
-                                            memoria=config.PASTA_CACHE / "ultimo_modelo.txt")
+                                            memoria=config.PASTA_CACHE / "modelos_sem_cota.json")
                     cliente.resolver_modelo()
                     self.cliente = cliente
                 if rodada != self.geracao:
                     return   # a pessoa cancelou enquanto a gente conectava
-                processador = Processador(self.cliente, self.cache, self.cfg.paginas,
-                                          self.cfg.workers, self.eventos, rodada)
+                processador = Processador(self.cliente, self.cache, nivel,
+                                          self.cfg.workers, self.eventos, rodada, escalar)
                 self.processador = processador
                 processador.iniciar(caminhos, instrucoes, forcar)
             except Exception as erro:
@@ -325,8 +355,9 @@ class App:
             return   # a pessoa tirou a linha da lista enquanto esperava
 
         linha = self.linhas[id_linha]
-        linha.update(status=resultado.status, dados=resultado.dados,
-                     erro=resultado.erro, manual=False)
+        linha.update(status=resultado.status, dados=resultado.dados, erro=resultado.erro,
+                     modelo=resultado.modelo, nivel=resultado.nivel,
+                     manual=False, conferida=False)
         dados = resultado.dados
         if dados:
             linha["campos"] = {"tipo": dados.tipo_documento.value, "area": dados.area,
@@ -351,7 +382,10 @@ class App:
         c = self.cliente
         if not c:
             return ""
-        return f"modelo {c.modelo}  ·  {c.chamadas} chamadas  ·  {c.tokens_usados:,} tokens"
+        if not c.uso_por_modelo:
+            return "nenhuma chamada nova (tudo veio do cache)"
+        modelos = ", ".join(f"{n} com {m}" for m, n in c.uso_por_modelo.most_common())
+        return f"{c.chamadas} chamadas ({modelos})  ·  {c.tokens_usados:,} tokens"
 
     def _marcar_pendentes_como_cancelados(self) -> int:
         quantos = 0
@@ -427,6 +461,7 @@ class App:
             valor = editor.get().strip()
             editor.destroy()
             linha = self.linhas[id_linha]
+            linha["conferida"] = True   # mexeu na linha: deixa de ir para .verificar
             if coluna == "novo_nome":
                 # Nome digitado à mão vira lei: o modelo de nome não mexe mais nele.
                 linha["novo_nome"] = finalizar_nome(valor)
@@ -481,6 +516,8 @@ class App:
                 f"DOI: {d.doi or '—'}",
                 f"Palavras-chave: {', '.join(d.palavras_chave) or '—'}",
                 f"Confiança: {d.confianca:.0%}",
+                f"Analisado por: {linha.get('modelo') or '—'}"
+                f" (nível {NIVEIS[linha.get('nivel', 1)].nome})",
                 f"\nResumo: {d.resumo_curto}",
             ]
         self._escrever_no_painel("\n".join(partes))
@@ -536,24 +573,26 @@ class App:
 
     def copiar(self):
         destino = Path(self.var_destino.get().strip() or ".")
-        itens, pulados = [], 0
+        itens, para_verificar = [], 0
         for id_linha in self.tabela.get_children():
             linha = self.linhas[id_linha]
-            # Sem análise não há nome confiável, a menos que a pessoa tenha digitado um.
-            sem_nome = linha["status"] in (NA_FILA, CANCELADO) or \
-                (linha["status"] == ERRO and not linha["manual"])
-            if sem_nome:
-                pulados += 1
+            sem_analise = linha["status"] in (NA_FILA, CANCELADO, ERRO) and not linha["manual"]
+            if sem_analise:
+                # Sem análise não há nome confiável: vai com o nome original.
+                itens.append((linha["caminho"], "Sem análise", linha["caminho"].name, True))
+                para_verificar += 1
                 continue
+            verificar = linha["status"] == BAIXA and not linha.get("conferida")
+            para_verificar += verificar
             categoria = linha["campos"].get("tipo") or "Outros"
-            itens.append((linha["caminho"], categoria, linha["novo_nome"]))
+            itens.append((linha["caminho"], categoria, linha["novo_nome"], verificar))
 
         if not itens:
-            messagebox.showwarning("Atenção", "Nenhum arquivo pronto para copiar.")
+            messagebox.showwarning("Atenção", "Nenhum arquivo na lista.")
             return
 
-        aviso = (f"\n\n{pulados} arquivo(s) com erro ou pendentes serão pulados "
-                 f"(edite o novo nome deles para incluí-los).") if pulados else ""
+        aviso = (f"\n\n{para_verificar} arquivo(s) com dúvida, erro ou sem análise vão para "
+                 f"a pasta {PASTA_VERIFICAR}.") if para_verificar else ""
         confirmou = messagebox.askyesno(
             "Confirmar", f"Copiar {len(itens)} PDF(s) para:\n{destino}\n\n"
                          f"Subpastas por categoria. Originais não são alterados.{aviso}")
@@ -561,7 +600,8 @@ class App:
             return
 
         resultado = copiar(itens, destino)
-        mensagem = (f"Copiados: {len(resultado['copiados'])}\n"
+        mensagem = (f"Copiados: {len(resultado['copiados'])}"
+                    f" ({para_verificar} em {PASTA_VERIFICAR})\n"
                     f"Erros: {len(resultado['erros'])}")
         if resultado["erros"]:
             mensagem += "\n\n" + "\n".join(f"• {Path(e['origem']).name}: {e['erro']}"
@@ -572,7 +612,6 @@ class App:
 
         if resultado["copiados"] and messagebox.askyesno("Abrir", "Abrir a pasta de saída?"):
             os.startfile(destino)
-
 
 def main():
     root = tk.Tk()

@@ -80,9 +80,14 @@ def ler_pdf(caminho: Path, n_paginas: int = 5, sha256: str = "") -> InfoPDF:
 
         quantas = min(n_paginas, info.paginas)
         info.texto = _extrair_texto(leitor, quantas)
-        info.recorte = _recortar(leitor, quantas)
     except Exception as erro:
         info.erro = f"Falha ao ler PDF: {erro}"[:200]
+        return info
+
+    try:
+        info.recorte = _recortar(leitor, quantas)
+    except Exception:
+        pass   # sem o recorte, o Gemini recebe só o texto extraído
     return info
 
 
@@ -127,7 +132,9 @@ def _recortar(leitor: PdfReader, quantas: int) -> bytes:
     """
     escritor = PdfWriter()
     for i in range(quantas):
-        escritor.add_page(leitor.pages[i])
+        # Sem os links: num livro com sumário clicável, copiar a página puxava as
+        # páginas de destino de cada link, e assim por diante, até estourar a recursão.
+        escritor.add_page(leitor.pages[i], excluded_keys=("/Annots", "/B"))
     buffer = io.BytesIO()
     escritor.write(buffer)
     recorte = buffer.getvalue()

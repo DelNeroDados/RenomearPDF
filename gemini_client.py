@@ -2,19 +2,24 @@
 Tudo o que fala com o Gemini mora aqui.
 
 A ideia é que o resto do programa só precise chamar `cliente.analisar(info)` e
-receber de volta um `MetadadosPDF` pronto. Os detalhes chatos ficam escondidos
+receber de volta um `MetadadosPDF` pronto, junto com o nome do modelo que
+respondeu. Os detalhes chatos ficam escondidos
 neste arquivo: respeitar a cota, tentar de novo quando o Google está
 sobrecarregado e trocar de modelo quando um deles para de responder.
 """
 
+import json
 import re
 import threading
 import time
+from collections import Counter
+from datetime import date
 
 import httpx
 from google import genai
 from google.genai import errors, types
 
+from config import NIVEIS, NIVEL_NORMAL, Nivel
 from pdf_tools import InfoPDF
 from schema import MetadadosPDF
 
@@ -48,73 +53,71 @@ class Cancelado(Exception):
 class ClienteGemini:
     def __init__(self, api_key: str, modelo: str = "", rpm: int = 10, memoria=None):
         """
-        modelo:  vazio deixa o programa escolher sozinho.
+        modelo:  vazio deixa o programa escolher sozinho, conforme o nível de esforço.
         rpm:     quantas chamadas por minuto a chave aguenta.
-        memoria: arquivo onde anotamos o último modelo que funcionou, para começar
-                 por ele da próxima vez em vez de bater de novo num que estava sem cota.
+        memoria: arquivo onde anotamos os modelos que ficaram sem cota hoje, para não
+                 gastar uma chamada batendo neles de novo até a cota renovar.
         """
         if not api_key:
             raise ValueError("GEMINI_API_KEY não configurada no .env")
 
         self.client = genai.Client(api_key=api_key,
                                    http_options=types.HttpOptions(timeout=TIMEOUT_MS))
-        self.modelo = modelo
-        self.candidatos: list[str] = [modelo] if modelo else []
+        self.modelo_fixo = modelo
+        self.disponiveis: list[str] = [modelo] if modelo else []
         self.memoria = memoria
         self.limitador = LimitadorTaxa(rpm)
+
+        self.fora: set[str] = set()            # sem cota ou fora do ar nesta sessão
+        self.sem_raciocinio: set[str] = set()  # modelos que recusaram o thinking_level
+        self.modelo = modelo                   # o último usado, para a barra de status
 
         # Contadores mostrados na barra de status ao final.
         self.chamadas = 0
         self.tokens_usados = 0
+        self.uso_por_modelo: Counter = Counter()
 
         # A interface substitui esta função para exibir avisos ("trocando de modelo...").
         self.ao_aviso = lambda mensagem: None
 
         self._trava = threading.Lock()
-        self._ultimo_anotado = ""
 
-    # ------------------------------------------------------------------
     # Escolha do modelo
-    # ------------------------------------------------------------------
 
     def resolver_modelo(self) -> str:
         """
-        Confere se a chave funciona e monta a fila de modelos que vamos tentar.
-
-        Ordem da fila: o modelo fixado no .env (se houver), depois o último que deu
-        certo, depois os Flash do mais novo para o mais velho. Listar modelos não
-        consome cota, então isto pode rodar sempre que o programa abre.
+        Confere se a chave funciona e guarda a lista de modelos liberados para ela.
+        Listar modelos não consome cota, então isto pode rodar sempre que o programa abre.
         """
-        disponiveis = [
+        self.disponiveis = [
             m.name.removeprefix("models/")
             for m in self.client.models.list()
             if "generateContent" in (getattr(m, "supported_actions", None) or ["generateContent"])
         ]
-        if self.modelo and self.modelo not in disponiveis:
-            raise ValueError(f"Modelo '{self.modelo}' não disponível para esta chave.")
+        if self.modelo_fixo and self.modelo_fixo not in self.disponiveis:
+            raise ValueError(f"Modelo '{self.modelo_fixo}' não disponível para esta chave.")
+        self.fora |= self._sem_cota_hoje()
 
-        fila = ordenar_flash(disponiveis)
-        ultimo = self._ler_memoria()
-        if ultimo in fila:
-            fila.remove(ultimo)
-            fila.insert(0, ultimo)
-
-        fixado = [self.modelo] if self.modelo else []
-        self.candidatos = fixado + [m for m in fila if m != self.modelo]
-        if not self.candidatos:
-            raise ValueError("Nenhum modelo Flash disponível para esta chave.")
-
-        self.modelo = self.candidatos[0]
+        fila = self.fila(NIVEIS[NIVEL_NORMAL])
+        if not fila:
+            raise ValueError("Nenhum modelo Flash disponível (ou todos sem cota hoje).")
+        self.modelo = fila[0]
         return self.modelo
 
-    # ------------------------------------------------------------------
+    def fila(self, nivel: Nivel) -> list[str]:
+        """Modelos a tentar neste nível, do preferido ao último recurso."""
+        ordem = ordenar_modelos(self.disponiveis, nivel.familias)
+        if self.modelo_fixo:
+            ordem = [self.modelo_fixo] + [m for m in ordem if m != self.modelo_fixo]
+        return [m for m in ordem if m not in self.fora]
+
     # Análise de um PDF
-    # ------------------------------------------------------------------
 
     def analisar(self, info: InfoPDF, instrucao_extra: str = "",
-                 cancelado: threading.Event | None = None) -> MetadadosPDF:
+                 cancelado: threading.Event | None = None,
+                 nivel: Nivel = NIVEIS[NIVEL_NORMAL]) -> tuple[MetadadosPDF, str]:
         """
-        Manda as primeiras páginas do PDF e devolve os metadados.
+        Manda as primeiras páginas do PDF e devolve (metadados, modelo que respondeu).
 
         Preferimos enviar o próprio PDF (o Gemini enxerga layout e lê páginas
         escaneadas). Se o Gemini recusar o arquivo, caímos para o texto extraído.
@@ -124,7 +127,7 @@ class ClienteGemini:
         if info.recorte:
             pdf = types.Part.from_bytes(data=info.recorte, mime_type="application/pdf")
             try:
-                return self._chamar([pdf, pistas], cancelado)
+                return self._chamar([pdf, pistas], cancelado, nivel)
             except errors.ClientError as erro:
                 if erro.code != 400 or not info.texto.strip():
                     raise
@@ -132,8 +135,8 @@ class ClienteGemini:
 
         if not info.texto.strip():
             raise ValueError("PDF sem texto e sem páginas enviáveis")
-        texto = f"{pistas}\n\nTexto das primeiras páginas:\n{info.texto[:20000]}"
-        return self._chamar([texto], cancelado)
+        texto = f"{pistas}\n\nTexto das primeiras páginas:\n{info.texto[:40000]}"
+        return self._chamar([texto], cancelado, nivel)
 
     def _montar_pistas(self, info: InfoPDF, instrucao_extra: str) -> str:
         pistas = [f"Nome do arquivo: {info.caminho.name}",
@@ -146,24 +149,37 @@ class ClienteGemini:
             pistas.append(f"CORREÇÃO DO USUÁRIO (tem prioridade): {instrucao_extra}")
         return "\n".join(pistas)
 
-    def _chamar(self, conteudo, cancelado) -> MetadadosPDF:
-        """Faz a chamada de verdade, com novas tentativas e troca de modelo."""
-        config = types.GenerateContentConfig(
+    def _config(self, nivel: Nivel, modelo: str) -> types.GenerateContentConfig:
+        extra = {}
+        if nivel.raciocinio and modelo not in self.sem_raciocinio:
+            extra["thinking_config"] = types.ThinkingConfig(thinking_level=nivel.raciocinio)
+        return types.GenerateContentConfig(
             system_instruction=INSTRUCOES,
             response_mime_type="application/json",
             response_schema=MetadadosPDF,   # o Gemini é obrigado a seguir este formato
             temperature=0.1,                # catalogar não pede criatividade
+            **extra,
         )
+
+    def _chamar(self, conteudo, cancelado, nivel: Nivel) -> tuple[MetadadosPDF, str]:
+        """Faz a chamada de verdade, com novas tentativas e troca de modelo."""
         falhas_neste_modelo = 0
+        anterior = ""
 
         for tentativa in range(1, MAX_TENTATIVAS + 1):
+            candidatos = self.fila(nivel)
+            if not candidatos:
+                raise SemModelo("Todos os modelos estão sem cota ou fora do ar.")
+            modelo = candidatos[0]
+            if modelo != anterior:
+                falhas_neste_modelo, anterior = 0, modelo
+
             self.limitador.aguardar(cancelado)
-            modelo = self.modelo
             try:
                 resposta = self.client.models.generate_content(
-                    model=modelo, contents=conteudo, config=config)
+                    model=modelo, contents=conteudo, config=self._config(nivel, modelo))
                 self._registrar_sucesso(modelo, resposta)
-                return _ler_resposta(resposta)
+                return _ler_resposta(resposta), modelo
 
             except ValueError:
                 # Resposta fora do formato. Com saída estruturada é raro; tenta de novo.
@@ -171,6 +187,10 @@ class ClienteGemini:
                     raise
 
             except (errors.APIError, httpx.TimeoutException, httpx.TransportError) as erro:
+                if _recusou_raciocinio(erro) and modelo not in self.sem_raciocinio:
+                    # Modelo sem suporte ao thinking_level: repete sem ele.
+                    self.sem_raciocinio.add(modelo)
+                    continue
                 if tentativa == MAX_TENTATIVAS:
                     raise
                 falhas_neste_modelo += 1
@@ -179,9 +199,8 @@ class ClienteGemini:
                 if acao == "desistir":
                     raise
                 if acao == "trocar":
-                    if not self._trocar_modelo(modelo, _motivo(erro)):
+                    if not self._tirar_modelo(modelo, erro, nivel):
                         raise   # acabaram os modelos
-                    falhas_neste_modelo = 0
                     continue
 
                 # acao == "esperar"
@@ -196,47 +215,54 @@ class ClienteGemini:
     def _registrar_sucesso(self, modelo: str, resposta) -> None:
         with self._trava:
             self.chamadas += 1
+            self.uso_por_modelo[modelo] += 1
+            self.modelo = modelo
             uso = getattr(resposta, "usage_metadata", None)
             self.tokens_usados += getattr(uso, "total_token_count", 0) or 0
-        self._anotar_memoria(modelo)
 
-    def _trocar_modelo(self, que_falhou: str, motivo: str) -> bool:
+    def _tirar_modelo(self, que_falhou: str, erro, nivel: Nivel) -> bool:
         """
-        Passa para o próximo modelo da fila. A troca vale para todas as threads:
-        não adianta cada uma descobrir sozinha que o modelo está sem cota.
+        Tira o modelo da fila. Vale para todas as threads: não adianta cada uma
+        descobrir sozinha que o modelo está sem cota. Devolve False se acabaram.
         """
         with self._trava:
-            if self.modelo != que_falhou:
-                return True   # outra thread já trocou enquanto esta esperava
-            if que_falhou in self.candidatos:
-                self.candidatos.remove(que_falhou)
-            if not self.candidatos:
-                return False
-            self.modelo = self.candidatos[0]
-        self.ao_aviso(f"{que_falhou} {motivo}; trocando para {self.modelo}")
-        return True
+            ja_tirado = que_falhou in self.fora
+            self.fora.add(que_falhou)
+        if not ja_tirado and _cota_diaria(erro):
+            self._anotar_sem_cota(que_falhou)
+        restantes = self.fila(nivel)
+        if restantes and not ja_tirado:
+            self.ao_aviso(f"{que_falhou} {_motivo(erro)}; trocando para {restantes[0]}")
+        return bool(restantes)
 
-    # ------------------------------------------------------------------
-    # Memória do último modelo que funcionou
-    # ------------------------------------------------------------------
+    # Memória dos modelos sem cota (a cota diária renova uma vez por dia)
 
-    def _ler_memoria(self) -> str:
+    def _sem_cota_hoje(self) -> set[str]:
         if not self.memoria:
-            return ""
+            return set()
         try:
-            return self.memoria.read_text(encoding="utf-8").strip()
-        except OSError:
-            return ""
+            dados = json.loads(self.memoria.read_text(encoding="utf-8"))
+            if dados.get("dia") == date.today().isoformat():
+                return set(dados.get("modelos", []))
+        except (OSError, ValueError, AttributeError):
+            pass
+        return set()
 
-    def _anotar_memoria(self, modelo: str) -> None:
-        if not self.memoria or modelo == self._ultimo_anotado:
+    def _anotar_sem_cota(self, modelo: str) -> None:
+        if not self.memoria:
             return
-        try:
-            self.memoria.parent.mkdir(parents=True, exist_ok=True)
-            self.memoria.write_text(modelo, encoding="utf-8")
-            self._ultimo_anotado = modelo
-        except OSError:
-            pass   # não conseguir anotar não deve atrapalhar a análise
+        with self._trava:
+            try:
+                modelos = sorted(self._sem_cota_hoje() | {modelo})
+                self.memoria.parent.mkdir(parents=True, exist_ok=True)
+                self.memoria.write_text(json.dumps(
+                    {"dia": date.today().isoformat(), "modelos": modelos}), encoding="utf-8")
+            except OSError:
+                pass   # não conseguir anotar não deve atrapalhar a análise
+
+
+class SemModelo(Exception):
+    """Nenhum modelo sobrou para tentar."""
 
 
 # ----------------------------------------------------------------------
@@ -318,6 +344,11 @@ def _retry_delay(erro) -> float | None:
     return None
 
 
+def _recusou_raciocinio(erro) -> bool:
+    return (isinstance(erro, errors.APIError) and erro.code == 400
+            and "thinking" in str(erro.message or "").lower())
+
+
 def _cota_diaria(erro) -> bool:
     return isinstance(erro, errors.APIError) and "PerDay" in str(erro.details or "")
 
@@ -332,6 +363,8 @@ def descrever_erro(erro: Exception) -> str:
                 return "Cota diária esgotada em todos os modelos (nível gratuito). Tente amanhã."
             return "Cota da API esgotada (429)."
         return f"Erro da API {erro.code}: {(erro.message or '')[:150]}"
+    if isinstance(erro, SemModelo):
+        return str(erro) + " Tente mais tarde ou escolha outro nível."
     return f"{type(erro).__name__}: {str(erro)[:150]}"
 
 
@@ -355,27 +388,28 @@ def _dormir(segundos: float, cancelado: threading.Event | None) -> None:
         raise Cancelado()
 
 
-def ordenar_flash(nomes: list[str]) -> list[str]:
+def ordenar_modelos(nomes: list[str], familias=("flash", "flash-lite")) -> list[str]:
     """
-    Monta a fila de modelos Flash de texto, do mais forte para o mais fraco:
-    versões estáveis (mais nova primeiro), o apelido '-latest' e, por último,
-    as versões 'lite'. Previews e modelos de imagem ou voz ficam de fora.
+    Monta a fila de modelos de texto, família por família (ex.: primeiro os 'flash',
+    depois os 'flash-lite'). Dentro da família: versões estáveis, da mais nova para a
+    mais velha, e depois o apelido '-latest'. Previews e modelos de imagem ou voz
+    ficam de fora.
     """
-    def por_versao(sufixo):
+    fila = []
+    for familia in familias:
         achados = []
         for nome in nomes:
-            m = re.fullmatch(rf"gemini-(\d+(?:\.\d+)?)-{sufixo}", nome)
+            m = re.fullmatch(rf"gemini-(\d+(?:\.\d+)?)-{familia}", nome)
             if m:
                 achados.append((float(m.group(1)), nome))
-        return [nome for _, nome in sorted(achados, reverse=True)]
-
-    fila = por_versao("flash")
-    if "gemini-flash-latest" in nomes:
-        fila.append("gemini-flash-latest")
-    fila += por_versao("flash-lite")
-    if "gemini-flash-lite-latest" in nomes:
-        fila.append("gemini-flash-lite-latest")
+        fila += [nome for _, nome in sorted(achados, reverse=True)]
+        if f"gemini-{familia}-latest" in nomes:
+            fila.append(f"gemini-{familia}-latest")
     return fila
+
+
+def ordenar_flash(nomes: list[str]) -> list[str]:
+    return ordenar_modelos(nomes, ("flash", "flash-lite"))
 
 
 def escolher_flash(nomes: list[str]) -> str | None:

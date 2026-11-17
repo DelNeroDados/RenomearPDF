@@ -114,6 +114,7 @@ A janela **"Renomeador de PDFs acadêmicos — Gemini"** se abre.
 │ Pasta dos PDFs: [C:\...\Artigos            ] [Escolher…] ☐ Incluir subpastas       │
 │                                               [▶ Analisar com IA] [■ Cancelar]      │
 │ Pasta de saída: [C:\...\Artigos\out        ] [Escolher…]  Modelo do nome: [......]  │
+│ Esforço da IA:  Econômico ──■──── Máximo   Normal: flash, 5 páginas  ☑ Refazer dúvidas │
 ├──────────────────────────────────────────────────────────┬────────────────────────┤
 │  TABELA DE ARQUIVOS                                      │ [📄 Abrir PDF]          │
 │  St │ Arquivo │ Categoria │ Área │ Sobrenome │ Ano │ ... │ [Ver texto]             │
@@ -136,6 +137,24 @@ A janela **"Renomeador de PDFs acadêmicos — Gemini"** se abre.
 | **■ Cancelar** | Para a análise **na hora** e libera a janela. Os arquivos que faltavam ficam com ⏹. Se uma análise que já estava em andamento terminar depois, o resultado aparece na tabela mesmo assim. |
 | **Pasta de saída** | Para onde as cópias vão. Se ficar vazia, o programa usa `out` dentro da pasta dos PDFs. |
 | **Modelo do nome** | Formato dos nomes novos. Veja a [seção 7](#7-modelo-do-nome-dos-arquivos). |
+| **Esforço da IA** | Quanto a IA se esforça (e quanto de cota gasta) em cada PDF. Veja a tabela abaixo. |
+| **Refazer dúvidas no nível acima** | Marcado (padrão): o que voltar com erro ou confiança abaixo de 60% é refeito **uma vez** no nível seguinte, e fica o melhor dos dois resultados. |
+
+#### Esforço da IA
+
+| Nível | Modelo preferido | Páginas lidas | Raciocínio | Quando usar |
+|---|---|---|---|---|
+| Econômico | flash-lite | 3 | mínimo | Pastas grandes, artigos com capa simples. Gasta pouca cota. |
+| Normal | flash | 5 | baixo | O dia a dia. |
+| Caprichado | flash | 10 | alto | Livros escaneados e antigos, em que o título aparece depois da página 5. |
+| Máximo | pro | 15 | alto | Casos difíceis. O `pro` costuma não ter cota no nível gratuito; aí o programa usa o flash. |
+
+Se o modelo preferido estiver sem cota, o programa desce para o próximo (por exemplo, do
+flash para o flash-lite). O painel de detalhes mostra qual modelo e qual nível analisaram
+cada arquivo.
+
+Uma boa forma de economizar: deixe no **Econômico** com **Refazer dúvidas** marcado. Só os
+arquivos difíceis gastam a análise mais cara.
 
 ### Tabela (centro)
 
@@ -158,8 +177,8 @@ A janela **"Renomeador de PDFs acadêmicos — Gemini"** se abre.
 | ⏳ | cinza | Na fila, esperando análise |
 | ✔ | normal | Analisado com sucesso |
 | ↺ | texto azul | Analisado antes; veio do [cache](#10-cache-análises-guardadas), sem gastar cota |
-| ⚠ | **amarelo** | A IA ficou em dúvida (confiança abaixo de 60%). **Confira esta linha.** |
-| ✖ | **vermelho** | Erro: arquivo corrompido, protegido por senha ou falha da IA |
+| ⚠ | **amarelo** | A IA ficou em dúvida (confiança abaixo de 60%). **Confira esta linha.** Se não editar, a cópia vai para `.verificar`. |
+| ✖ | **vermelho** | Erro: arquivo corrompido, protegido por senha ou falha da IA. A cópia vai para `.verificar\Sem análise`, com o nome original. |
 | ⏹ | cinza | Não analisado porque você clicou em Cancelar. Clique em **▶ Analisar** de novo (o que já foi feito vem do cache) ou selecione e use **Reanalisar**. |
 
 ### Painel direito
@@ -171,15 +190,16 @@ A janela **"Renomeador de PDFs acadêmicos — Gemini"** se abre.
 | **↻ Reanalisar com instrução…** | Manda as linhas selecionadas de novo para a IA, com uma dica sua. Veja a [seção 6.3](#63-reanalisar-com-instrução). |
 
 Ao clicar numa linha, o painel mostra **todos** os dados que a IA encontrou: autores
-completos, instituição, periódico, DOI, palavras-chave e resumo. Linhas com erro mostram
+completos, instituição, periódico, DOI, palavras-chave, resumo e o modelo e o nível que
+fizeram a análise. Linhas com erro mostram
 a mensagem de erro.
 
 ### Parte de baixo
 
 - **Barra de progresso** e texto de status. Durante a análise, o status mostra avisos como
   *"gemini-3.8-flash sem cota; trocando para gemini-3.5-flash"*, para você saber o que está
-  acontecendo. Ao terminar, mostra o modelo usado, quantas chamadas foram feitas e quantos
-  tokens foram gastos.
+  acontecendo. Ao terminar, mostra quantas chamadas foram feitas com cada modelo (assim dá
+  para ver se boa parte caiu para o flash-lite) e quantos tokens foram gastos.
 - **✔ Copiar e renomear**: faz a cópia final.
 
 ---
@@ -216,8 +236,12 @@ e **vermelhas (✖)**.
 
 Clique em **✔ Copiar e renomear** e confirme.
 
-No final aparece um resumo com o número de arquivos copiados, os erros e o caminho do log.
-O programa oferece abrir a pasta de saída.
+**Todos os arquivos da lista são copiados.** Os que ficaram com dúvida (⚠), erro (✖) ou sem
+análise (⏹) vão para a pasta `.verificar` dentro da saída, para você conferir depois. Uma
+linha que você editou conta como conferida e vai para a pasta normal.
+
+No final aparece um resumo com o número de arquivos copiados, quantos foram para
+`.verificar`, os erros e o caminho do log. O programa oferece abrir a pasta de saída.
 
 ---
 
@@ -318,6 +342,11 @@ C:\Artigos\out\
 │   └── Educação-Medeiros-2011-Formação de professores de ciências.pdf
 ├── Dissertações\
 ├── Slides e Apresentações\
+├── .verificar\
+│   ├── Livros\
+│   │   └── Outros-Documento sem título.pdf     (confiança baixa)
+│   └── Sem análise\
+│       └── arquivo_que_deu_erro.pdf            (nome original)
 └── _logs\
     └── copia_20261116_153012.json
 ```
@@ -332,7 +361,7 @@ Slides e Apresentações · Apostilas e Material Didático · Outros
   `nome (2).pdf`, `nome (3).pdf` e assim por diante.
 - A data de modificação original do arquivo é mantida.
 - O arquivo `_logs\copia_AAAAMMDD_HHMMSS.json` registra de onde veio e para onde foi cada
-  arquivo, e os erros, se houver.
+  arquivo, se ele foi para `.verificar`, e os erros, se houver.
 
 ---
 
@@ -345,17 +374,17 @@ GEMINI_API_KEY=sua_chave
 GEMINI_MODEL=
 GEMINI_RPM=10
 GEMINI_WORKERS=4
-PDF_PAGINAS=5
+NIVEL_IA=1
 MODELO_NOME={area}-{sobrenome}-{ano}-{titulo}
 ```
 
 | Chave | Padrão | O que faz | Quando mudar |
 |---|---|---|---|
 | `GEMINI_API_KEY` | — | Chave da API | Obrigatória |
-| `GEMINI_MODEL` | vazio | Modelo do Gemini. Vazio = escolhe sozinho: começa pelo último modelo que funcionou e, se ele falhar, passa pelos Flash do mais novo para o mais velho (veja a [seção 11](#11-custos-cotas-e-privacidade)). | Para fixar um modelo, ex.: `gemini-2.5-flash` ou um modelo `pro` (mais preciso, mais lento e mais caro) |
+| `GEMINI_MODEL` | vazio | Modelo do Gemini. Vazio = escolhe sozinho conforme o **Esforço da IA**, do mais novo para o mais velho, pulando os que estão sem cota hoje (veja a [seção 11](#11-custos-cotas-e-privacidade)). Preenchido, ele é sempre o primeiro a ser tentado. | Para fixar um modelo, ex.: `gemini-2.5-flash` ou um modelo `pro` (mais preciso, mais lento e mais caro) |
 | `GEMINI_RPM` | `10` | Máximo de requisições por minuto | Suba (ex.: `300`) se o projeto da chave tiver **faturamento ativo** no Google Cloud. Se aparecerem muitos erros de cota, abaixe. |
 | `GEMINI_WORKERS` | `4` | PDFs analisados em paralelo | Suba junto com o RPM em pastas grandes |
-| `PDF_PAGINAS` | `5` | Páginas iniciais enviadas | Aumente se o título ou o autor aparecerem só depois da página 5. Mais páginas gastam mais tokens. |
+| `NIVEL_IA` | `1` | Posição inicial do controle **Esforço da IA**: 0 Econômico, 1 Normal, 2 Caprichado, 3 Máximo | Se você quase sempre usa outro nível |
 | `MODELO_NOME` | `{area}-{sobrenome}-{ano}-{titulo}` | Modelo de nome padrão | Ao gosto |
 
 > **Sobre "plano Pro":** a assinatura Google AI Pro (do app Gemini) **não** aumenta os limites
@@ -372,13 +401,16 @@ Toda análise bem-sucedida fica guardada em `RenomearPDF\.cache\analises.sqlite`
   continua sendo reconhecido.
 - Reabrir a mesma pasta **não gasta cota**: as linhas aparecem com ↺.
 - **Reanalisar** ignora o cache e grava o resultado novo.
+- O cache anota até que nível o arquivo já foi analisado. Uma análise feita no Econômico
+  não é reaproveitada se você pedir Caprichado; a contrária é.
 - Para apagar o cache inteiro, feche o programa e apague a pasta `.cache`.
 
 ---
 
 ## 11. Custos, cotas e privacidade
 
-**Custo:** cada PDF consome uma chamada ao Gemini com cerca de 5 páginas. O total de tokens
+**Custo:** cada PDF consome uma chamada ao Gemini com 3 a 15 páginas, conforme o nível, e
+mais uma se a dúvida for refeita no nível acima. O total de tokens
 aparece na barra de status ao final. No nível gratuito, o limite diário de chamadas é baixo.
 Com faturamento ativo, o custo de um modelo Flash para algumas centenas de PDFs costuma ser
 de centavos a poucos reais. Consulte os preços atuais em <https://ai.google.dev/pricing>.
@@ -389,8 +421,9 @@ sobrecarregado. Quando o modelo atual falha, o programa passa sozinho para o pr�
 - **cota diária esgotada** ou modelo desativado: troca na hora;
 - **sobrecarga (503)** ou demora: tenta mais uma vez e depois troca.
 
-O programa lembra o último modelo que funcionou (`.cache\ultimo_modelo.txt`) e começa por ele
-na próxima vez. Se todos os modelos falharem, a linha fica ✖. Espere e reanalise só essas linhas.
+Quando a cota **diária** de um modelo acaba, o programa anota isso em
+`.cache\modelos_sem_cota.json` e não tenta mais esse modelo até o dia seguinte, para não gastar
+uma chamada à toa. Se todos os modelos falharem, a linha fica ✖. Espere e reanalise só essas linhas.
 
 **Nível gratuito:** chaves sem faturamento têm um limite **diário** baixo por modelo (em
 nov/2026, 20 requisições por dia no `gemini-3.8-flash`). Com a troca automática, uma pasta

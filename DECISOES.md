@@ -69,7 +69,8 @@ quatro promessas, nesta ordem de prioridade:
 3. **Cada chamada à IA é cara.** Cota gratuita acaba, cota paga custa dinheiro.
    Nada é enviado duas vezes sem necessidade.
 4. **A IA sugere, a pessoa decide.** O resultado aparece numa tabela editável.
-   Nada é copiado sem revisão e confirmação.
+   Nada é copiado sem confirmação, e o que a IA não garantiu vai para uma pasta
+   separada, à espera de conferência.
 
 ---
 
@@ -319,12 +320,22 @@ extraível, foi identificado corretamente.
 Se o Gemini recusar o PDF (erro 400, normalmente arquivo malformado), o
 programa reenvia só o texto (`ClienteGemini.analisar`).
 
-### Só as primeiras 5 páginas
+### Só as primeiras páginas
 
-Capa, folha de rosto, ficha catalográfica e resumo estão sempre no começo.
+Capa, folha de rosto, ficha catalográfica e resumo quase sempre estão no começo.
 Mandar uma tese de 250 páginas gastaria dezenas de vezes mais tokens sem
-melhorar nada. O número é configurável (`PDF_PAGINAS`) para os casos raros em
-que a informação aparece depois.
+melhorar nada. Quantas páginas vão depende do nível de esforço (3 a 15).
+
+O "quase sempre" apareceu na prática: um livro escaneado de 1860 tinha capa,
+epígrafe e páginas em branco antes da folha de rosto, que estava na página 7.
+Com 5 páginas, a IA respondeu "Documento sem título" com 10% de confiança. No
+nível Caprichado (10 páginas) ela achou título, autor e ano.
+
+Se o recorte falhar, vai só o texto. Isso também apareceu na prática: num livro
+de 1462 páginas com sumário clicável, copiar a primeira página fazia o `pypdf`
+seguir cada link para as páginas de destino, e dali para outras, até estourar o
+limite de recursão. O recorte agora copia as páginas sem os links (`/Annots`),
+que não servem para identificar a obra.
 
 Se mesmo o recorte passar de 15 MB (páginas escaneadas em altíssima resolução),
 vai só o texto. O limite do Gemini para envio direto é de uns 20 MB, e os 5 MB
@@ -373,6 +384,31 @@ Quando a IA erra, a pessoa pode reenviar com uma correção em texto livre
 (tem prioridade)". Corrigir uma linha assim costuma ser mais rápido do que
 editar quatro campos à mão, e o resultado corrigido vai para o cache.
 
+### Nível de esforço
+
+Um controle deslizante na janela escolhe entre quatro níveis (`config.NIVEIS`).
+Cada nível define três coisas: a família de modelo preferida, quantas páginas
+vão e o `thinking_level` do Gemini (quanto ele "pensa" antes de responder).
+
+| Nível | Família | Páginas | Raciocínio |
+|---|---|---|---|
+| Econômico | flash-lite | 3 | mínimo |
+| Normal | flash | 5 | baixo |
+| Caprichado | flash | 10 | alto |
+| Máximo | pro | 15 | alto |
+
+Juntar as três coisas num controle só foi de propósito: quem usa o programa
+quer decidir "quanto gastar", não ajustar três parâmetros técnicos.
+
+Junto vem a opção **Refazer dúvidas no nível acima**: o que volta com erro ou
+confiança abaixo de 60% é refeito uma vez no nível seguinte, e fica o melhor dos
+dois resultados. Só uma vez, e só um nível acima, para o gasto continuar
+previsível. Com isso, a forma mais econômica de usar o programa é deixar no
+Econômico e pagar a análise mais cara só nos arquivos difíceis.
+
+Alguns modelos podem recusar o `thinking_level` (erro 400). Nesse caso o pedido
+é repetido sem ele, e o modelo fica anotado para não errar de novo.
+
 ### Escolha automática do modelo
 
 Os modelos do Gemini mudam o tempo todo. Durante o desenvolvimento, o
@@ -380,22 +416,29 @@ Os modelos do Gemini mudam o tempo todo. Durante o desenvolvimento, o
 Fixar um nome no código é pedir para quebrar.
 
 Por isso, ao conectar, o programa **lista** os modelos da chave (o que não gasta
-cota) e monta uma fila (`gemini_client.ordenar_flash`):
+cota) e, a cada chamada, monta a fila do nível escolhido
+(`gemini_client.ordenar_modelos`):
 
 1. o modelo fixado no `.env`, se houver;
-2. o último que funcionou (anotado em `.cache/ultimo_modelo.txt`);
-3. os Flash estáveis, do mais novo para o mais velho;
-4. o apelido `gemini-flash-latest`;
-5. as versões `lite`, por último.
+2. as famílias do nível, na ordem (no Normal: flash, depois flash-lite);
+3. dentro de cada família, as versões estáveis da mais nova para a mais velha e,
+   por último, o apelido `-latest`;
+4. menos os modelos que estão sem cota ou fora do ar.
 
-A família Flash foi escolhida por ser rápida e barata, e porque extrair
-metadados de uma capa não exige o raciocínio de um modelo Pro. Previews e
-modelos de imagem e voz ficam de fora: os primeiros mudam sem aviso e os outros
-não servem para a tarefa.
+Previews e modelos de imagem e voz ficam de fora: os primeiros mudam sem aviso e
+os outros não servem para a tarefa.
 
-Lembrar o último modelo que funcionou resolve um problema real: na chave
-gratuita, o modelo mais novo esgota a cota diária cedo, e sem a memória cada
-nova sessão gastaria tempo batendo nele primeiro.
+Quando a cota **diária** de um modelo acaba, ele é anotado em
+`.cache/modelos_sem_cota.json` com a data. Até o dia virar, as próximas sessões
+já começam sem ele. Antes, o programa lembrava só o último modelo que tinha
+funcionado; isso deixava a primeira chamada de cada sessão bater num modelo sem
+cota.
+
+Na chave gratuita, a cota do flash acaba rápido, e o programa desce para o
+flash-lite sem parar. Numa execução real, 38 de 42 PDFs acabaram analisados pelo
+flash-lite, e o único sinal disso era um aviso passageiro na barra de status.
+Agora o resumo final mostra quantas chamadas cada modelo fez, e o painel mostra
+o modelo de cada arquivo.
 
 ### O que fazer com cada erro
 
@@ -495,8 +538,11 @@ nome e conteúdos diferentes não se confundem.
 
 - **Reanalisar**: a pessoa pediu explicitamente uma nova análise.
 - **Reanalisar com instrução**: o resultado precisa refletir a correção.
+- **Nível maior que o guardado**: uma análise feita no Econômico não serve para
+  quem pediu Caprichado. O cache anota o nível mais alto já tentado em cada
+  arquivo; a contrária vale (pedir Normal reaproveita uma análise Caprichada).
 
-Em ambos os casos, o resultado novo substitui o antigo.
+Nos três casos, o resultado novo substitui o antigo.
 
 ### Mudanças de formato
 
@@ -595,12 +641,19 @@ Cada cópia grava `_logs/copia_AAAAMMDD_HHMMSS.json`, com origem e destino de ca
 arquivo. Se a pessoa estranhar alguma coisa depois, dá para rastrear de onde
 veio cada cópia.
 
-### Linhas puladas
+### A pasta .verificar
 
-Linhas com erro, pendentes ou canceladas não são copiadas, porque não há um nome
-confiável para elas. A exceção é quando a pessoa digitou um nome à mão: aí ela
-assumiu a responsabilidade. O aviso de confirmação diz quantas serão puladas e
-por quê.
+No começo, linhas com erro, pendentes ou canceladas eram puladas na cópia, e as
+de confiança baixa eram copiadas normalmente. Os dois comportamentos deram
+problema: o arquivo pulado sumia do resultado sem ninguém perceber (o log só
+registrava o que foi copiado), e o de confiança baixa ia para a pasta final com
+um nome como "Outros-Documento sem título.pdf".
+
+Agora tudo é copiado, mas o que não é confiável vai para `.verificar` dentro da
+saída: as linhas ⚠ com o nome sugerido, e as que não têm análise com o nome
+original, em `.verificar/Sem análise`. Nada se perde e nada duvidoso se mistura
+com o que está certo. Uma linha que a pessoa editou conta como conferida e vai
+para a pasta normal.
 
 ---
 
@@ -614,8 +667,10 @@ por quê.
   linha só.
 - **Valores inválidos não quebram nada**: `GEMINI_RPM=abc` vira o padrão (10).
   É melhor funcionar com o padrão do que não abrir por causa de um erro de digitação.
-- **O `.env` é relido a cada análise**: mudar o número de páginas ou o limite
-  por minuto não exige fechar o programa.
+- **O `.env` é relido a cada análise**: mudar o limite por minuto não exige
+  fechar o programa.
+- **O nível de esforço fica na janela**, não no `.env`, porque muda de pasta para
+  pasta. O `NIVEL_IA` só define a posição inicial do controle.
 
 ---
 
@@ -735,7 +790,6 @@ manter o programa leve e simples:
 | **Detecção de duplicatas** por semelhança | O cache por hash já detecta cópias idênticas. Versões diferentes do mesmo artigo exigiriam embeddings: complexidade demais para o ganho. |
 | **Modo linha de comando** | A estrutura em módulos permite criar um em poucas linhas, chamando o `pipeline` e o `organizer`. Ainda não houve necessidade. |
 | **Mover em vez de copiar, e Desfazer** | Decisão explícita: só copiar. Assim não há o que desfazer. |
-| **Modelo Pro** | Mais lento e mais caro, e os Flash deram resultados coerentes em todos os documentos de teste. Continua disponível via `GEMINI_MODEL` para quem quiser. |
 
 Se alguma dessas ideias voltar à mesa, a arquitetura já tem um lugar claro para
 ela: o chat e a Crossref entrariam ao lado do `gemini_client.py`, a linha de

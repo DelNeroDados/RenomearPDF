@@ -13,7 +13,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
 
+from google.genai import errors
+
 from cache import Cache
+from config import NIVEIS
 from gemini_client import Cancelado, ClienteGemini, descrever_erro
 from pdf_tools import InfoPDF, hash_arquivo, ler_pdf
 from schema import MetadadosPDF
@@ -21,7 +24,7 @@ from schema import MetadadosPDF
 # Situações possíveis de cada arquivo depois de analisado.
 OK, CACHE, BAIXA, ERRO = "ok", "cache", "baixa", "erro"
 
-# Abaixo disto, a linha fica amarela pedindo revisão.
+# Abaixo disto, a linha fica amarela e a cópia vai para a pasta .verificar.
 LIMIAR_CONFIANCA = 0.6
 
 
@@ -32,6 +35,9 @@ class Resultado:
     dados: MetadadosPDF | None = None
     info: InfoPDF | None = None
     erro: str = ""
+    modelo: str = ""
+    nivel: int = 0
+    repetir: bool = True   # False quando insistir não adianta (PDF ilegível, chave errada)
 
 
 class Processador:
@@ -47,11 +53,12 @@ class Processador:
     a janela sabe ignorar os avisos que ainda chegarem da rodada velha.
     """
 
-    def __init__(self, cliente: ClienteGemini, cache: Cache, paginas: int, workers: int,
-                 fila: Queue | None = None, geracao: int = 0):
+    def __init__(self, cliente: ClienteGemini, cache: Cache, nivel: int, workers: int,
+                 fila: Queue | None = None, geracao: int = 0, escalar: bool = True):
         self.cliente = cliente
         self.cache = cache
-        self.paginas = paginas
+        self.nivel = nivel
+        self.escalar = escalar
         self.workers = workers
         self.fila = fila if fila is not None else Queue()
         self.geracao = geracao
@@ -80,9 +87,9 @@ class Processador:
         if self.cancelado.is_set():
             return
         try:
-            resultado = analisar_um(caminho, self.cliente, self.cache, self.paginas,
+            resultado = analisar_um(caminho, self.cliente, self.cache, self.nivel,
                                     self.cancelado, self.instrucoes.get(caminho, ""),
-                                    self.usar_cache)
+                                    self.usar_cache, self.escalar)
         except Cancelado:
             return
         except Exception as erro:
@@ -94,34 +101,72 @@ class Processador:
         self.fila.put((self.geracao, tipo, carga))
 
 
-def analisar_um(caminho: Path, cliente: ClienteGemini, cache: Cache, paginas: int,
+def analisar_um(caminho: Path, cliente: ClienteGemini, cache: Cache, nivel: int,
                 cancelado: threading.Event, instrucao: str = "",
-                usar_cache: bool = True) -> Resultado:
+                usar_cache: bool = True, escalar: bool = False) -> Resultado:
     """
     O caminho completo de um único PDF:
-    hash -> cache? -> lê o PDF -> Gemini -> guarda no cache.
+    hash -> cache? -> lê o PDF -> Gemini -> (dúvida? nível seguinte) -> cache.
+
+    Com `escalar`, um resultado com erro ou confiança baixa é refeito uma vez no
+    nível seguinte, e fica o melhor dos dois.
 
     O cache é consultado antes de abrir o PDF de propósito: calcular o hash é
     bem mais rápido do que extrair texto e páginas.
     """
     sha = hash_arquivo(caminho)
+    niveis = [nivel]
+    if escalar and nivel + 1 < len(NIVEIS):
+        niveis.append(nivel + 1)
 
+    melhor = None
     if usar_cache and not instrucao:
         guardado = cache.obter(sha)
-        if guardado:
-            return Resultado(caminho, CACHE, guardado)
+        if guardado and guardado.nivel >= nivel:
+            melhor = Resultado(caminho, CACHE, guardado.dados, modelo=guardado.modelo,
+                               nivel=guardado.nivel)
+            if guardado.dados.confianca < LIMIAR_CONFIANCA:
+                melhor.status = BAIXA
+            # Só volta ao Gemini se ficou em dúvida e ainda há um nível acima para tentar.
+            niveis = [n for n in niveis if n > guardado.nivel] if melhor.status == BAIXA else []
+            if not niveis:
+                return melhor
 
-    info = ler_pdf(caminho, paginas, sha)
+    tentado = nivel
+    for n in niveis:
+        resultado = _analisar_no_nivel(caminho, sha, n, cliente, cancelado, instrucao)
+        if resultado.dados:   # falha de cota não conta como nível tentado
+            tentado = n
+        melhor = _o_melhor(melhor, resultado)
+        if resultado.status == OK or not resultado.repetir:
+            break
+
+    if melhor.dados and melhor.status != CACHE:
+        # O nível anotado é o mais alto já tentado, para não repetir a escalada à toa.
+        cache.salvar(sha, melhor.modelo, melhor.dados, max(tentado, melhor.nivel))
+    return melhor
+
+
+def _analisar_no_nivel(caminho, sha, n, cliente, cancelado, instrucao) -> Resultado:
+    info = ler_pdf(caminho, NIVEIS[n].paginas, sha)
     if info.erro:
-        return Resultado(caminho, ERRO, info=info, erro=info.erro)
-
+        return Resultado(caminho, ERRO, info=info, erro=info.erro, nivel=n, repetir=False)
     try:
-        dados = cliente.analisar(info, instrucao, cancelado)
+        dados, modelo = cliente.analisar(info, instrucao, cancelado, NIVEIS[n])
     except Cancelado:
         raise
     except Exception as erro:
-        return Resultado(caminho, ERRO, info=info, erro=descrever_erro(erro))
-
-    cache.salvar(sha, cliente.modelo, dados)
+        definitivo = isinstance(erro, errors.ClientError) and erro.code in (401, 403)
+        return Resultado(caminho, ERRO, info=info, erro=descrever_erro(erro), nivel=n,
+                         repetir=not definitivo)
     status = BAIXA if dados.confianca < LIMIAR_CONFIANCA else OK
-    return Resultado(caminho, status, dados, info)
+    return Resultado(caminho, status, dados, info, modelo=modelo, nivel=n)
+
+
+def _o_melhor(a: Resultado | None, b: Resultado) -> Resultado:
+    """Com dados vence sem dados; entre dois com dados, vence a maior confiança."""
+    if a is None or not a.dados:
+        return b if (b.dados or a is None) else a
+    if not b.dados:
+        return a
+    return b if b.dados.confianca >= a.dados.confianca else a
