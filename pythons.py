@@ -26,6 +26,7 @@ import sys
 print(sys.version.split()[0])
 try:
     import tkinter
+    tkinter.Tk().destroy()   # importar não basta: sem a pasta do Tcl/Tk, a janela não abre
     print("tk ok")
 except Exception:
     print("tk falta")
@@ -107,5 +108,5 @@ def testar(exe: Path) -> Teste:
     if numeros < (3, 10):
         return Teste(False, versao, faltando, f"Python {versao} é antigo; precisa do 3.10 ou mais novo")
     if "tk ok" not in r.stdout:
-        return Teste(False, versao, faltando, "sem Tkinter, que desenha a janela")
+        return Teste(False, versao, faltando, "Tkinter incompleto (falta o tkinter ou a pasta do Tcl/Tk, que desenham a janela)")
     return Teste(True, versao, faltando)

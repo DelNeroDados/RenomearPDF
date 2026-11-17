@@ -30,9 +30,10 @@ rem pergunta onde esta o python.exe e guarda a resposta.
 set "PY="
 set "PY_ESCOLHIDO="
 set "SALVAR_PY="
+set "VEIO_DO_ENV="
 if exist "config\.env" for /f "usebackq tokens=1,* delims==" %%a in ("config\.env") do if /i "%%a"=="PYTHON" set "PY_ESCOLHIDO=%%b"
 if not defined PY_ESCOLHIDO goto :python_automatico
-if exist "%PY_ESCOLHIDO%" set "PY="%PY_ESCOLHIDO%"" & goto :python_testar
+if exist "%PY_ESCOLHIDO%" set "PY="%PY_ESCOLHIDO%"" & set "VEIO_DO_ENV=1" & goto :python_testar
 echo [aviso] O Python escolhido nas Configuracoes nao existe mais:
 echo         %PY_ESCOLHIDO%
 echo         Usando a escolha automatica.
@@ -45,8 +46,10 @@ if not defined PY where python <nul >nul 2>nul && set "PY=python"
 if not defined PY goto :sem_python
 
 :python_testar
-rem O "python" da Microsoft Store pode ser so um atalho vazio; testamos de verdade.
-%PY% -c "import sys, tkinter; sys.exit(0 if sys.version_info >= (3, 10) else 1)" <nul >nul 2>nul
+rem O "python" da Microsoft Store pode ser so um atalho vazio, e um Python portatil
+rem pode ter o modulo tkinter sem a pasta do Tcl/Tk. Por isso criamos uma janela
+rem de verdade (invisivel, fechada na hora), em vez de so importar o tkinter.
+%PY% -c "import sys, tkinter; tkinter.Tk().destroy(); sys.exit(0 if sys.version_info >= (3, 10) else 1)" <nul >nul 2>nul
 if errorlevel 1 goto :python_nao_serve
 echo [ok] Python encontrado: %PY%
 
@@ -106,12 +109,16 @@ exit /b 0
 
 :python_nao_serve
 echo.
-echo [erro] O Python %PY% nao serve: precisa ser 3.10 ou mais novo, com Tkinter.
+echo [erro] O Python %PY% nao serve: precisa ser 3.10 ou mais novo, com Tkinter
+echo         completo (o tkinter e a pasta do Tcl/Tk, que desenham a janela).
+rem Se o que falhou foi o Python guardado no config\.env, tenta a escolha automatica
+rem antes de perguntar; se ela achar um que sirva, o config\.env volta para automatico.
+if defined VEIO_DO_ENV set "VEIO_DO_ENV=" & set "PY=" & set "PY_ESCOLHIDO=" & set "SALVAR_PY=1" & echo         Tentando a escolha automatica... & goto :python_automatico
 goto :perguntar_python
 
 :sem_python
 echo.
-echo [erro] Nao encontrei o Python 3.10 ou mais novo, com Tkinter.
+echo [erro] Nao encontrei o Python 3.10 ou mais novo, com Tkinter completo.
 
 :perguntar_python
 if /i "%~1"=="--testar" exit /b 1
