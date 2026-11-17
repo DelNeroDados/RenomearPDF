@@ -107,6 +107,12 @@ Depois, para trocar a chave, não precisa mexer no arquivo: use o menu
 instala as bibliotecas que faltarem, cria o `config\.env` (abrindo o Bloco de Notas para você
 colar a chave) e abre o programa. Na prática, ele faz sozinho os passos 2.2 e 2.3.
 
+Se ele não achar um Python que sirva (3.10 ou mais novo, com Tkinter), pergunta onde está o
+`python.exe`: cole o caminho, arraste o arquivo para a janela preta ou aperte Enter para
+procurar numa janela. Serve para um Python portátil ou instalado fora do PATH. A resposta
+fica guardada em `config\.env` e não é perguntada de novo; para trocar depois, use
+**Configurações → Python…**.
+
 > Para só conferir se está tudo instalado, sem abrir a janela: `Iniciar.bat --testar`.
 
 **Pelo terminal**, dentro da pasta do projeto:
@@ -490,6 +496,7 @@ faturamento ativo e sem conferir os termos de uso.
 | Sintoma | Causa provável | Solução |
 |---|---|---|
 | `ModuleNotFoundError: No module named 'google'` ou `'pypdf'` | Bibliotecas não instaladas | Rode o comando da [seção 2.2](#22-bibliotecas) |
+| **"Nao encontrei o Python"** ao abrir pelo `Iniciar.bat` | Python não instalado, ou instalado num lugar que ele não conhece | Indique o `python.exe` quando ele perguntar (veja a [seção 3](#3-como-abrir-o-programa)), ou instale pelo python.org |
 | `'python' não é reconhecido` | Python não instalado ou fora do PATH | Instale pelo python.org marcando *Add to PATH*, ou use o caminho completo do `python.exe` |
 | Mensagem **"Chave recusada (401)"** ou **"(403)"** | Chave inválida ou revogada | Gere uma chave nova no AI Studio e troque em **Configurações → Chave da API…** |
 | Algo deu errado e você não sabe o quê | — | **Configurações → Abrir o log**: o `logs\renomearpdf.log` registra cada etapa e os erros |
