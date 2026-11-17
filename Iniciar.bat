@@ -51,7 +51,9 @@ if errorlevel 1 goto :python_nao_serve
 echo [ok] Python encontrado: %PY%
 
 rem ---------- 2. Bibliotecas ----------
-%PY% -c "import google.genai, pypdf, pymupdf" <nul >nul 2>nul
+rem Importa tudo o que o programa usa direto e confere a versao do google-genai:
+rem um Python emprestado de outro projeto pode ter as bibliotecas pela metade.
+%PY% -c "import google.genai, httpx, pydantic, pypdf, pymupdf; from importlib.metadata import version as v; assert tuple(int(n) for n in v('google-genai').split('.')[:2]) >= (2, 17)" <nul >nul 2>nul
 if errorlevel 1 (
     echo Instalando as bibliotecas, so acontece na primeira vez...
     %PY% -m pip install -r requirements.txt
